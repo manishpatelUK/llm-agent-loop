@@ -57,7 +57,17 @@ Early stage / under active design. This README will be kept up to date as each p
 implemented.
 
 Implemented so far (Java):
-- **History compression** (`com.manishpateluk.llmagentloop.compression`) — `HistoryCompressor`
+- **Main entry point** (`io.github.manishpateluk.llmagentloop`) — `AgentLoop` is the library's
+  entry point, constructed with an `LlmRouter` and run via `run(...)`, with progressively-defaulted
+  overloads converging on the canonical `run(LoopRequest)`. `LoopRequest` carries the prompt, an
+  optional `AgentProfile` (placeholder for the point-6 agent-behavior config, fleshed out later),
+  optional `File` attachments, and the run's three async callbacks: `onResult` (the final
+  `llm-router` `Response`), `onError`, and `onMessage` — status updates (`AgentMessage`: a
+  `MessageType`, a message body, a timestamp, and free-form metadata) meant for things like a
+  "thinking..." indicator on a frontend. Usage is always async — there is no blocking call.
+  Loop execution itself (the actual planning/step/retry logic) is implemented in a later pass;
+  `run(LoopRequest)` currently validates its input and throws `UnsupportedOperationException`.
+- **History compression** (`io.github.manishpateluk.llmagentloop.compression`) — `HistoryCompressor`
   is the single entry point (`HistoryCompressor.compress(...)`, with progressively-defaulted
   overloads). It compares the request's estimated token size (padded 5% for safety) against the
   target model's context window — read from `llm-router`'s `ModelCapabilityTable`, the one

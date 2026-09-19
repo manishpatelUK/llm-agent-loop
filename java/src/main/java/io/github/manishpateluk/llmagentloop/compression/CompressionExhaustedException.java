@@ -1,11 +1,14 @@
 package io.github.manishpateluk.llmagentloop.compression;
 
+import lombok.Getter;
+
 import java.util.List;
 
 /**
  * Thrown by {@link HistoryCompressor} when every {@link CompressionMethod} in the preference
  * list has been tried and the request still exceeds the target token budget.
  */
+@Getter
 public class CompressionExhaustedException extends RuntimeException {
 
     private final int targetTokens;
@@ -17,18 +20,6 @@ public class CompressionExhaustedException extends RuntimeException {
         this.targetTokens = targetTokens;
         this.finalEstimatedTokens = finalEstimatedTokens;
         this.attempts = List.copyOf(attempts);
-    }
-
-    public int getTargetTokens() {
-        return targetTokens;
-    }
-
-    public int getFinalEstimatedTokens() {
-        return finalEstimatedTokens;
-    }
-
-    public List<CompressionAttempt> getAttempts() {
-        return attempts;
     }
 
     private static String buildMessage(int targetTokens, int finalEstimatedTokens, List<CompressionAttempt> attempts) {

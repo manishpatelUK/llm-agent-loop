@@ -18,6 +18,7 @@
     <maven.compiler.source>25</maven.compiler.source>
     <maven.compiler.target>25</maven.compiler.target>
     <llm-router.version>1.0.1</llm-router.version>
+    <lombok.version>1.18.38</lombok.version>
     <junit.version>5.11.4</junit.version>
     <assertj.version>3.26.3</assertj.version>
   </properties>
@@ -27,6 +28,13 @@
       <groupId>io.github.manishpateluk</groupId>
       <artifactId>llm-router</artifactId>
       <version>${llm-router.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <version>${lombok.version}</version>
+      <scope>provided</scope>
     </dependency>
 
     <dependency>
@@ -53,6 +61,13 @@
           <source>25</source>
           <target>25</target>
           <parameters>true</parameters>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>org.projectlombok</groupId>
+              <artifactId>lombok</artifactId>
+              <version>${lombok.version}</version>
+            </path>
+          </annotationProcessorPaths>
         </configuration>
       </plugin>
       <plugin>
