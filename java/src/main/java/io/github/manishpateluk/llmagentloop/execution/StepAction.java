@@ -16,5 +16,8 @@ public enum StepAction {
     SUB_TASK,
 
     /** The thread's goal was declared complete. */
-    COMPLETE
+    COMPLETE,
+
+    /** The run stopped early — a cost or time bound was reached; see {@link TerminationReason}. */
+    TRUNCATED
 }

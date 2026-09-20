@@ -86,6 +86,19 @@ Implemented so far (Java):
   - `maxSteps` on `AgentProfile` (default 25, no way to request unbounded) is the safety net
     against runaway recursion until real cost/time budgets exist
     (`AgentLoopStepLimitExceededException`).
+  - `LoopRequest.maxCostUsdCents` and `maxDuration` are optional, approximate per-run bounds —
+    unlike `maxSteps`, they default to unbounded (current no-bound behavior) and, when set, stop
+    the run *gracefully* rather than failing it: checked after each step completes (not mid-step,
+    so the bound is met "at or after", never exact), the run returns whatever answer it has so far
+    via `onResult` — not `onError` — with a `WARNING` `AgentMessage` explaining why, and
+    `Execution.terminationReason()` (`COMPLETED` / `COST_LIMIT_REACHED` / `TIME_LIMIT_REACHED`) on
+    the result records what happened. The check applies globally across the whole run — a bound
+    crossed inside a sub-task or a plan step stops everything, not just that branch.
+  - File attachments are read once per run and the same `Attachment`s reused, unchanged, on every
+    call the run makes — which, combined with reusing the same `LlmRouter` instance throughout,
+    is exactly what `llm-router` 1.0.2+ needs to deduplicate repeat file uploads by content hash
+    (via each provider's own Files API) instead of re-embedding the same bytes every turn. Nothing
+    extra to configure on this side to get that.
   - Known simplifications, called out rather than silently glossed over: an unregistered tool call
     ends the run via `onError` (`UnregisteredToolException`) rather than being handed back to the
     caller to resolve; growing history isn't yet run through `HistoryCompressor` before each call,

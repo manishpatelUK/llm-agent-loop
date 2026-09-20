@@ -3,6 +3,7 @@ package io.github.manishpateluk.llmagentloop;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -70,5 +71,47 @@ class LoopRequestTest {
 
         assertThat(request.files()).containsExactly(file);
         assertThat(request.onMessage()).isSameAs(onMessage);
+    }
+
+    @Test
+    void costAndTimeBoundsDefaultToNullMeaningUnbounded() {
+        LoopRequest request = LoopRequest.builder().prompt("hi").onResult(onResult).onError(onError).build();
+
+        assertThat(request.maxCostUsdCents()).isNull();
+        assertThat(request.maxDuration()).isNull();
+    }
+
+    @Test
+    void costAndTimeBoundsCanBeSupplied() {
+        LoopRequest request = LoopRequest.builder()
+                .prompt("hi")
+                .onResult(onResult)
+                .onError(onError)
+                .maxCostUsdCents(100)
+                .maxDuration(Duration.ofMinutes(5))
+                .build();
+
+        assertThat(request.maxCostUsdCents()).isEqualTo(100);
+        assertThat(request.maxDuration()).isEqualTo(Duration.ofMinutes(5));
+    }
+
+    @Test
+    void maxCostUsdCentsMustBePositiveWhenSupplied() {
+        assertThatThrownBy(() -> LoopRequest.builder()
+                .prompt("hi").onResult(onResult).onError(onError).maxCostUsdCents(0).build())
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoopRequest.builder()
+                .prompt("hi").onResult(onResult).onError(onError).maxCostUsdCents(-1).build())
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void maxDurationMustBePositiveWhenSupplied() {
+        assertThatThrownBy(() -> LoopRequest.builder()
+                .prompt("hi").onResult(onResult).onError(onError).maxDuration(Duration.ZERO).build())
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoopRequest.builder()
+                .prompt("hi").onResult(onResult).onError(onError).maxDuration(Duration.ofSeconds(-1)).build())
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

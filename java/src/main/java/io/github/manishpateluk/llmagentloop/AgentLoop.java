@@ -12,6 +12,7 @@ import com.manishpateluk.llmrouter.model.ToolDefinition;
 import io.github.manishpateluk.llmagentloop.execution.Execution;
 import io.github.manishpateluk.llmagentloop.execution.StepAction;
 import io.github.manishpateluk.llmagentloop.execution.StepRecord;
+import io.github.manishpateluk.llmagentloop.execution.TerminationReason;
 import io.github.manishpateluk.llmagentloop.memory.MemoryStore;
 import io.github.manishpateluk.llmagentloop.plan.Plan;
 import io.github.manishpateluk.llmagentloop.plan.PlanStep;
@@ -22,6 +23,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -42,6 +45,13 @@ import java.util.function.Consumer;
  * <p>Every overload of {@link #run} funnels into {@link #run(LoopRequest)}; the shorter overloads
  * just build a {@link LoopRequest} with sensible defaults (no {@link AgentProfile}, no files, a
  * no-op status-message callback).
+ *
+ * <p>{@link LoopRequest#maxCostUsdCents()} and {@link LoopRequest#maxDuration()} are optional,
+ * approximate bounds on top of {@link AgentProfile#maxSteps()}: checked after each step completes
+ * (not mid-step), so once either is met or exceeded the run stops and returns whatever answer it
+ * has so far — via {@link LoopRequest#onResult()}, not {@link LoopRequest#onError()} — rather than
+ * continuing to the next step. {@code Execution.terminationReason()} on the result says whether
+ * that happened.
  *
  * <p>Known simplifications in this pass, called out rather than silently glossed over: branches
  * (sub-tasks, and a {@code Plan}'s parallel-grouped steps) execute sequentially, not concurrently;
@@ -112,11 +122,23 @@ public final class AgentLoop {
 
         private final LoopRequest request;
         private final AgentProfile profile;
+
+        /**
+         * Read from {@link LoopRequest#files()} once and reused, unchanged, on every call this
+         * run makes. Combined with reusing the same {@link LlmRouter} (and so the same adapter
+         * instances) across those calls, this is exactly the pattern {@code llm-router} 1.0.2's
+         * adapter-level content-hash dedup relies on: repeat calls with the same {@link Attachment}
+         * bytes get uploaded once (via each provider's Files API) and referenced by id afterward,
+         * rather than re-embedded every turn. Nothing else to do here to get that for free.
+         */
         private final List<Attachment> attachments;
+
         private final UUID executionId = UUID.randomUUID();
         private final List<StepRecord> steps = new ArrayList<>();
+        private final Instant startedAt = Instant.now();
         private int nextThread = 1;
         private int stepCount = 0;
+        private int accumulatedCostUsdCents = 0;
 
         private Run(LoopRequest request) {
             this.request = request;
@@ -146,7 +168,11 @@ public final class AgentLoop {
                         : executePlan(generatePlan(systemInstructions, history), systemInstructions, history, 0);
 
                 Response finalResponse = outcome.response().toBuilder().content(outcome.finalAnswer()).build();
-                complete(finalResponse);
+                complete(finalResponse, TerminationReason.COMPLETED);
+            } catch (BudgetExceeded e) {
+                Response truncated = truncatedResponse(e.lastResponse);
+                recordStep(e.thread, StepAction.TRUNCATED, "budget exceeded", null, null, truncated.getContent(), e.lastResponse);
+                complete(truncated, e.reason);
             } catch (Exception e) {
                 request.onError().accept(e);
             }
@@ -160,8 +186,9 @@ public final class AgentLoop {
                     .attachments(attachments)
                     .build();
             Response response = router.complete(req);
+            checkBudgets(0, response);
             recordStep(0, StepAction.COMPLETE, request.prompt(), null, null, response.getContent(), response);
-            complete(response);
+            complete(response, TerminationReason.COMPLETED);
         }
 
         /** {@code AUTO} only: a cheap call deciding between {@code ALWAYS_PLAN} and {@code RECURSIVE_ON_EACH_STEP} behavior. */
@@ -176,6 +203,7 @@ public final class AgentLoop {
                     .config(RouterConfig.builder().costOptimized(true).build())
                     .build();
             Response response = router.complete(req);
+            checkBudgets(0, response);
 
             Map<String, Object> out = response.getStructuredOutput();
             boolean needsPlan = out != null && Boolean.TRUE.equals(out.get("needsPlan"));
@@ -197,6 +225,7 @@ public final class AgentLoop {
                     .responseSchema(AgentLoopSchemas.PLAN_SCHEMA)
                     .build();
             Response response = router.complete(req);
+            checkBudgets(0, response);
 
             Map<String, Object> out = response.getStructuredOutput();
             if (out == null) {
@@ -253,6 +282,7 @@ public final class AgentLoop {
                         .tools(List.copyOf(availableTools))
                         .build();
                 Response response = router.complete(req);
+                checkBudgets(thread, response);
 
                 Optional<ToolCall> complete = findToolCall(response, AgentLoopSchemas.REPORT_COMPLETE_TOOL);
                 if (complete.isPresent()) {
@@ -312,6 +342,30 @@ public final class AgentLoop {
             }
         }
 
+        /**
+         * Approximate, checked after {@code response} comes back rather than before the call that
+         * produced it — so a step already in flight when a bound is crossed still completes, and
+         * the bound is met "at or after", never exactly. Throws {@link BudgetExceeded} to unwind
+         * every nested call (plan steps, sub-tasks) straight back to {@link #execute()} in one go.
+         */
+        private void checkBudgets(int thread, Response response) {
+            if (response.getUsage() != null) {
+                accumulatedCostUsdCents += response.getUsage().getEstimatedCostUsdCents();
+            }
+
+            Integer maxCost = request.maxCostUsdCents();
+            if (maxCost != null && accumulatedCostUsdCents >= maxCost) {
+                emit(thread, MessageType.WARNING, "Stopping early: cost limit reached");
+                throw new BudgetExceeded(thread, TerminationReason.COST_LIMIT_REACHED, response);
+            }
+
+            Duration maxDuration = request.maxDuration();
+            if (maxDuration != null && Duration.between(startedAt, Instant.now()).compareTo(maxDuration) >= 0) {
+                emit(thread, MessageType.WARNING, "Stopping early: time limit reached.");
+                throw new BudgetExceeded(thread, TerminationReason.TIME_LIMIT_REACHED, response);
+            }
+        }
+
         private void emit(int thread, MessageType type, String message) {
             request.onMessage().accept(AgentMessage.of(executionId, thread, type, message));
         }
@@ -331,13 +385,40 @@ public final class AgentLoop {
                     .build());
         }
 
-        private void complete(Response finalResponse) {
-            Execution execution = new Execution(executionId, List.copyOf(steps));
+        private void complete(Response finalResponse, TerminationReason reason) {
+            Execution execution = new Execution(executionId, List.copyOf(steps), reason);
             request.onResult().accept(new AgentLoopResult(finalResponse, execution));
+        }
+
+        /** The best-effort "result as is" when a bound was hit mid-run: the last response's own content, if any. */
+        private Response truncatedResponse(Response lastResponse) {
+            String content = lastResponse.getContent();
+            if (content == null || content.isBlank()) {
+                content = "Stopped early before producing a final answer: a cost or time limit was reached.";
+            }
+            return lastResponse.toBuilder().content(content).build();
         }
     }
 
     private record StepOutcome(String finalAnswer, Response response) {
+    }
+
+    /**
+     * Internal control-flow signal only — unwinds straight from wherever a bound was crossed
+     * (however deep in nested plan-step/sub-task calls) back to {@link Run#execute()}, which
+     * turns it into a graceful, non-error {@link AgentLoopResult}. Never surfaced to callers.
+     */
+    private static final class BudgetExceeded extends RuntimeException {
+        private final int thread;
+        private final TerminationReason reason;
+        private final Response lastResponse;
+
+        BudgetExceeded(int thread, TerminationReason reason, Response lastResponse) {
+            super(null, null, false, false);
+            this.thread = thread;
+            this.reason = reason;
+            this.lastResponse = lastResponse;
+        }
     }
 
     private static Optional<ToolCall> findToolCall(Response response, String name) {

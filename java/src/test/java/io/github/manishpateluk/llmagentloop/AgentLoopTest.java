@@ -5,11 +5,14 @@ import com.manishpateluk.llmrouter.capability.ModelCapabilityTable;
 import com.manishpateluk.llmrouter.capability.ModelEntry;
 import com.manishpateluk.llmrouter.model.Response;
 import com.manishpateluk.llmrouter.model.ToolCall;
+import com.manishpateluk.llmrouter.model.Usage;
 import com.manishpateluk.llmrouter.provider.Provider;
+import io.github.manishpateluk.llmagentloop.execution.TerminationReason;
 import io.github.manishpateluk.llmagentloop.tool.ToolRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -85,6 +88,7 @@ class AgentLoopTest {
 
         assertThat(capture.error).isNull();
         assertThat(capture.result.finalResponse().getContent()).isEqualTo("done");
+        assertThat(capture.result.execution().terminationReason()).isEqualTo(TerminationReason.COMPLETED);
         assertThat(capture.messages).anyMatch(m -> m.type() == MessageType.INFO && m.message().equals("Goal complete."));
     }
 
@@ -161,6 +165,76 @@ class AgentLoopTest {
 
         assertThat(capture.result).isNull();
         assertThat(capture.error).isInstanceOf(AgentLoopStepLimitExceededException.class);
+    }
+
+    @Test
+    void costLimitReachedStopsEarlyAndReturnsAPartialResultRatherThanAnError() throws InterruptedException {
+        registerModel();
+        AtomicInteger calls = new AtomicInteger();
+        // LlmRouter recomputes Usage.estimatedCostUsdCents itself from whichever real model it
+        // routes to (registerModel()'s synthetic entry isn't guaranteed to win route selection
+        // against llm-router's own seeded models) — 1,000,000 input tokens costs well over 1 cent
+        // under any plausible real per-token pricing, so the exact model chosen doesn't matter.
+        AgentLoop loop = newLoop(List.of(), request -> {
+            calls.incrementAndGet();
+            return Response.builder()
+                    .content("still working")
+                    .usage(Usage.builder().inputTokens(1_000_000).build())
+                    .toolCalls(List.of(ToolCall.builder().id("1").name("noop").arguments(Map.of()).build()))
+                    .build();
+        }, registry -> registry.register(
+                com.manishpateluk.llmrouter.model.ToolDefinition.builder()
+                        .name("noop")
+                        .description("Does nothing")
+                        .parameters(Map.of("type", "object"))
+                        .build(),
+                args -> "ok"));
+
+        Capture capture = run(loop, LoopRequest.builder()
+                .prompt("Loop forever")
+                .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build())
+                .maxCostUsdCents(1));
+
+        assertThat(capture.error).isNull();
+        assertThat(capture.result).isNotNull();
+        assertThat(capture.result.execution().terminationReason()).isEqualTo(TerminationReason.COST_LIMIT_REACHED);
+        assertThat(capture.result.finalResponse().getContent()).isEqualTo("still working");
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(capture.messages).anyMatch(
+                m -> m.type() == MessageType.WARNING && m.message().startsWith("Stopping early: cost limit"));
+    }
+
+    @Test
+    void timeLimitReachedStopsEarlyAndReturnsAPartialResultRatherThanAnError() throws InterruptedException {
+        registerModel();
+        AgentLoop loop = newLoop(List.of(), request -> {
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return Response.builder()
+                    .content("still working")
+                    .toolCalls(List.of(ToolCall.builder().id("1").name("noop").arguments(Map.of()).build()))
+                    .build();
+        }, registry -> registry.register(
+                com.manishpateluk.llmrouter.model.ToolDefinition.builder()
+                        .name("noop")
+                        .description("Does nothing")
+                        .parameters(Map.of("type", "object"))
+                        .build(),
+                args -> "ok"));
+
+        Capture capture = run(loop, LoopRequest.builder()
+                .prompt("Loop forever")
+                .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build())
+                .maxDuration(Duration.ofMillis(1)));
+
+        assertThat(capture.error).isNull();
+        assertThat(capture.result).isNotNull();
+        assertThat(capture.result.execution().terminationReason()).isEqualTo(TerminationReason.TIME_LIMIT_REACHED);
+        assertThat(capture.messages).anyMatch(
+                m -> m.type() == MessageType.WARNING && m.message().startsWith("Stopping early: time limit"));
     }
 
     private static void registerModel() {
