@@ -2,6 +2,7 @@ package io.github.manishpateluk.llmagentloop;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.manishpateluk.llmrouter.LlmRouter;
+import com.manishpateluk.llmrouter.RequestInterceptor;
 import com.manishpateluk.llmrouter.config.RouterConfig;
 import com.manishpateluk.llmrouter.model.Attachment;
 import com.manishpateluk.llmrouter.model.Message;
@@ -9,6 +10,9 @@ import com.manishpateluk.llmrouter.model.Request;
 import com.manishpateluk.llmrouter.model.Response;
 import com.manishpateluk.llmrouter.model.ToolCall;
 import com.manishpateluk.llmrouter.model.ToolDefinition;
+import com.manishpateluk.llmrouter.provider.ProviderAdapter;
+import io.github.manishpateluk.llmagentloop.compression.CompressionMethod;
+import io.github.manishpateluk.llmagentloop.compression.HistoryCompressor;
 import io.github.manishpateluk.llmagentloop.execution.Execution;
 import io.github.manishpateluk.llmagentloop.execution.StepAction;
 import io.github.manishpateluk.llmagentloop.execution.StepRecord;
@@ -33,6 +37,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -41,6 +46,13 @@ import java.util.function.Consumer;
  * tools, checking for completion, and possibly branching into sub-tasks — until the goal is
  * satisfied or {@link AgentProfile#maxSteps()} is exceeded. Reporting is entirely through
  * callbacks; usage is always asynchronous, there is no blocking call.
+ *
+ * <p><b>{@link #builder()} is the recommended way to construct one</b> — it assembles a router
+ * for you (with automatic history compression on by default, via
+ * {@code HistoryCompressor.newSelfCompressingRouter}) from either explicit provider adapters or
+ * environment-auto-detected credentials. The constructors below remain for callers that already
+ * have a fully-assembled {@link LlmRouter} — e.g. one with its own {@code RequestInterceptor} for
+ * something other than compression — and want no factory logic in the way.
  *
  * <p>Every overload of {@link #run} funnels into {@link #run(LoopRequest)}; the shorter overloads
  * just build a {@link LoopRequest} with sensible defaults (no {@link AgentProfile}, no files, a
@@ -56,9 +68,9 @@ import java.util.function.Consumer;
  * <p>Known simplifications in this pass, called out rather than silently glossed over: branches
  * (sub-tasks, and a {@code Plan}'s parallel-grouped steps) execute sequentially, not concurrently;
  * an unregistered tool call ends the run via {@link LoopRequest#onError()} rather than being
- * handed back to the caller to resolve; and growing history is not yet run through
- * {@code HistoryCompressor} before each call, since that needs a known target model and this loop
- * doesn't pin one down ahead of a call — a follow-up once that's decided.
+ * handed back to the caller to resolve; and a compression-enabled router's history-compression
+ * events aren't reflected in this run's {@code onMessage}/{@code Execution} trace — that hook has
+ * no way to know which {@code AgentLoop} run/thread a given call belongs to.
  */
 public final class AgentLoop {
 
@@ -85,6 +97,113 @@ public final class AgentLoop {
         this.router = Objects.requireNonNull(router, "router");
         this.tools = Objects.requireNonNull(tools, "tools");
         this.memory = Objects.requireNonNull(memory, "memory");
+    }
+
+    /** See {@link Builder}. */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /**
+     * Assembles an {@link AgentLoop}, including — unlike the constructors — its {@link LlmRouter}.
+     * Specify at most one of {@link #adapters} or {@link #router}; with neither, credentials are
+     * auto-detected from the environment (same as {@code new LlmRouter()}).
+     *
+     * <p>History compression is on by default (via {@code HistoryCompressor.newSelfCompressingRouter}),
+     * using {@code HistoryCompressor.DEFAULT_METHODS} unless {@link #compressionMethods} overrides
+     * them. It only applies when this builder assembles the router itself — {@link #compress} and
+     * {@link #compressionMethods} have no effect together with {@link #router}, since a
+     * caller-supplied router's compression story (if any) was already decided when it was built.
+     */
+    public static final class Builder {
+
+        private List<ProviderAdapter> adapters;
+        private LlmRouter router;
+        private boolean compress = true;
+        private List<CompressionMethod> compressionMethods;
+        private ToolRegistry tools = new ToolRegistry();
+        private MemoryStore memory = MemoryStore.NONE;
+
+        private Builder() {
+        }
+
+        /** Explicit adapters the assembled router should use — mutually exclusive with {@link #router}. */
+        public Builder adapters(List<ProviderAdapter> adapters) {
+            this.adapters = adapters;
+            return this;
+        }
+
+        /** A fully-assembled router to use as-is — mutually exclusive with {@link #adapters}. */
+        public Builder router(LlmRouter router) {
+            this.router = router;
+            return this;
+        }
+
+        public Builder tools(ToolRegistry tools) {
+            this.tools = tools;
+            return this;
+        }
+
+        public Builder memory(MemoryStore memory) {
+            this.memory = memory;
+            return this;
+        }
+
+        /** History compression is on by default; pass {@code false} to disable it. */
+        public Builder compress(boolean compress) {
+            this.compress = compress;
+            if (!compress) {
+                this.compressionMethods = null;
+            }
+            return this;
+        }
+
+        /** Enables compression (if {@link #compress} disabled it) using this preference list instead of the default. */
+        public Builder compressionMethods(List<CompressionMethod> methods) {
+            this.compress = true;
+            this.compressionMethods = methods;
+            return this;
+        }
+
+        public AgentLoop build() {
+            if (adapters != null && router != null) {
+                throw new IllegalStateException("Specify at most one of adapters() or router()");
+            }
+            if (router != null && compressionMethods != null) {
+                throw new IllegalStateException("compressionMethods() has no effect on a caller-supplied router() "
+                        + "— build it with HistoryCompressor.newSelfCompressingRouter(...) yourself instead");
+            }
+
+            LlmRouter effectiveRouter = router != null ? router : buildRouter();
+            return new AgentLoop(effectiveRouter, tools, memory);
+        }
+
+        private LlmRouter buildRouter() {
+            if (!compress) {
+                return adapters != null ? new LlmRouter(adapters) : new LlmRouter();
+            }
+            if (compressionMethods != null) {
+                return selfCompressingRouterWithCustomMethods();
+            }
+            return adapters != null
+                    ? HistoryCompressor.newSelfCompressingRouter(adapters)
+                    : HistoryCompressor.newSelfCompressingRouter();
+        }
+
+        /**
+         * {@code HistoryCompressor} only exposes a default-methods/auto-detect-adapters overload
+         * family (deliberately, to avoid an ambiguous overload distinguished only by a generic
+         * type parameter); building this one combination — a caller-supplied method list with
+         * auto-detected adapters — needs the same self-reference trick inline instead.
+         */
+        private LlmRouter selfCompressingRouterWithCustomMethods() {
+            AtomicReference<LlmRouter> self = new AtomicReference<>();
+            RequestInterceptor interceptor = (provider, model, request) ->
+                    HistoryCompressor.compress(request, provider, model, compressionMethods, self.get()).request();
+            LlmRouter built = adapters != null ? new LlmRouter(adapters, interceptor) : new LlmRouter(interceptor);
+            self.set(built);
+            return built;
+        }
     }
 
     /** Runs {@code prompt} with no agent profile, no files, and no status-message callback. */

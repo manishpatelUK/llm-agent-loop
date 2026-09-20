@@ -1,15 +1,18 @@
 package io.github.manishpateluk.llmagentloop.compression;
 
 import com.manishpateluk.llmrouter.LlmRouter;
+import com.manishpateluk.llmrouter.RequestInterceptor;
 import com.manishpateluk.llmrouter.capability.ModelCapabilityTable;
 import com.manishpateluk.llmrouter.capability.ModelEntry;
 import com.manishpateluk.llmrouter.provider.Provider;
+import com.manishpateluk.llmrouter.provider.ProviderAdapter;
 import com.manishpateluk.llmrouter.model.Request;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Compresses a {@link Request} so it fits the context window of the model it's about to be sent
@@ -24,6 +27,11 @@ import java.util.Objects;
  *
  * <p>Every public overload funnels into {@link #compress(Request, Provider, String, List, LlmRouter)};
  * callers only need to supply what they want to override.
+ *
+ * <p>{@link #newSelfCompressingRouter} builds an {@link LlmRouter} that runs this compression
+ * automatically, via {@code llm-router}'s {@link RequestInterceptor} hook, against the exact
+ * model each attempt is about to be sent to — the recommended way to get compression for free
+ * without any caller (e.g. {@code AgentLoop}) needing to know about it.
  */
 public final class HistoryCompressor {
 
@@ -44,6 +52,50 @@ public final class HistoryCompressor {
             CompressionMethod.LLM_SUMMARIZATION, new LlmSummarizationStrategy());
 
     private HistoryCompressor() {
+    }
+
+    /** Auto-detects credentials (same as {@code new LlmRouter()}); compresses using {@link #DEFAULT_METHODS}. */
+    public static LlmRouter newSelfCompressingRouter() {
+        AtomicReference<LlmRouter> self = new AtomicReference<>();
+        LlmRouter router = new LlmRouter(compressingInterceptor(self, DEFAULT_METHODS));
+        self.set(router);
+        return router;
+    }
+
+    /** Compresses using {@link #DEFAULT_METHODS}. */
+    public static LlmRouter newSelfCompressingRouter(List<ProviderAdapter> adapters) {
+        return newSelfCompressingRouter(adapters, DEFAULT_METHODS);
+    }
+
+    /**
+     * Builds an {@link LlmRouter} that compresses history against the exact model each attempt
+     * targets, immediately before it's sent — see {@link RequestInterceptor}. A caller that wants
+     * this for free (e.g. {@code AgentLoop}) just builds its router this way instead of
+     * {@code new LlmRouter(adapters)} and otherwise changes nothing.
+     *
+     * <p>{@link CompressionExhaustedException} and an unknown/off-table target model both
+     * propagate out of the hook rather than being swallowed — {@code llm-router} treats that the
+     * same as any other in-attempt failure (§5.1) and falls back to the next candidate, which may
+     * have a larger context window and not need compression at all.
+     *
+     * @param adapters explicit adapters, same as {@code new LlmRouter(adapters)}
+     * @param methods  ordered preference list of {@link CompressionMethod} to try on every attempt
+     */
+    public static LlmRouter newSelfCompressingRouter(List<ProviderAdapter> adapters, List<CompressionMethod> methods) {
+        Objects.requireNonNull(adapters, "adapters");
+        AtomicReference<LlmRouter> self = new AtomicReference<>();
+        LlmRouter router = new LlmRouter(adapters, compressingInterceptor(self, methods));
+        self.set(router);
+        return router;
+    }
+
+    /**
+     * {@code self} is set immediately after the {@link LlmRouter} it's installed into is
+     * constructed — safe because the interceptor is never invoked until a call is actually made,
+     * which can't happen before that constructor returns.
+     */
+    private static RequestInterceptor compressingInterceptor(AtomicReference<LlmRouter> self, List<CompressionMethod> methods) {
+        return (provider, model, request) -> compress(request, provider, model, methods, self.get()).request();
     }
 
     /** Compresses using {@link #DEFAULT_METHODS} and no LLM fallback available. */

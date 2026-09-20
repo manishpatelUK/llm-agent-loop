@@ -7,6 +7,7 @@ import com.manishpateluk.llmrouter.model.Response;
 import com.manishpateluk.llmrouter.model.ToolCall;
 import com.manishpateluk.llmrouter.model.Usage;
 import com.manishpateluk.llmrouter.provider.Provider;
+import io.github.manishpateluk.llmagentloop.AgentLoopRunSupport.Capture;
 import io.github.manishpateluk.llmagentloop.execution.TerminationReason;
 import io.github.manishpateluk.llmagentloop.tool.ToolRegistry;
 import org.junit.jupiter.api.AfterEach;
@@ -15,11 +16,9 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
+import static io.github.manishpateluk.llmagentloop.AgentLoopRunSupport.run;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -63,10 +62,10 @@ class AgentLoopTest {
                 .prompt("What is the capital of France?")
                 .agentProfile(AgentProfile.builder().planMode(PlanMode.NEVER_PLAN).build()));
 
-        assertThat(capture.error).isNull();
-        assertThat(capture.result).isNotNull();
-        assertThat(capture.result.finalResponse().getContent()).isEqualTo("Paris is the capital of France.");
-        assertThat(capture.result.execution().steps()).hasSize(1);
+        assertThat(capture.error()).isNull();
+        assertThat(capture.result()).isNotNull();
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("Paris is the capital of France.");
+        assertThat(capture.result().execution().steps()).hasSize(1);
         assertThat(calls.get()).isEqualTo(1);
     }
 
@@ -86,10 +85,10 @@ class AgentLoopTest {
                 .prompt("Do a simple thing")
                 .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build()));
 
-        assertThat(capture.error).isNull();
-        assertThat(capture.result.finalResponse().getContent()).isEqualTo("done");
-        assertThat(capture.result.execution().terminationReason()).isEqualTo(TerminationReason.COMPLETED);
-        assertThat(capture.messages).anyMatch(m -> m.type() == MessageType.INFO && m.message().equals("Goal complete."));
+        assertThat(capture.error()).isNull();
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("done");
+        assertThat(capture.result().execution().terminationReason()).isEqualTo(TerminationReason.COMPLETED);
+        assertThat(capture.messages()).anyMatch(m -> m.type() == MessageType.INFO && m.message().equals("Goal complete."));
     }
 
     @Test
@@ -121,12 +120,12 @@ class AgentLoopTest {
                 .prompt("Echo hi")
                 .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build()));
 
-        assertThat(capture.error).isNull();
-        assertThat(capture.result.finalResponse().getContent()).isEqualTo("echoed: hi");
-        assertThat(capture.result.execution().steps())
+        assertThat(capture.error()).isNull();
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("echoed: hi");
+        assertThat(capture.result().execution().steps())
                 .anyMatch(s -> s.toolName() != null && s.toolName().equals("echo") && "echo:hi".equals(s.toolResult()));
-        assertThat(capture.messages).anyMatch(m -> m.type() == MessageType.TOOL_CALL);
-        assertThat(capture.messages).anyMatch(m -> m.type() == MessageType.TOOL_RESULT);
+        assertThat(capture.messages()).anyMatch(m -> m.type() == MessageType.TOOL_CALL);
+        assertThat(capture.messages()).anyMatch(m -> m.type() == MessageType.TOOL_RESULT);
     }
 
     @Test
@@ -141,8 +140,8 @@ class AgentLoopTest {
                 .prompt("Do something")
                 .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build()));
 
-        assertThat(capture.result).isNull();
-        assertThat(capture.error).isInstanceOf(UnregisteredToolException.class);
+        assertThat(capture.result()).isNull();
+        assertThat(capture.error()).isInstanceOf(UnregisteredToolException.class);
     }
 
     @Test
@@ -163,8 +162,8 @@ class AgentLoopTest {
                 .prompt("Loop forever")
                 .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).maxSteps(2).build()));
 
-        assertThat(capture.result).isNull();
-        assertThat(capture.error).isInstanceOf(AgentLoopStepLimitExceededException.class);
+        assertThat(capture.result()).isNull();
+        assertThat(capture.error()).isInstanceOf(AgentLoopStepLimitExceededException.class);
     }
 
     @Test
@@ -195,12 +194,12 @@ class AgentLoopTest {
                 .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build())
                 .maxCostUsdCents(1));
 
-        assertThat(capture.error).isNull();
-        assertThat(capture.result).isNotNull();
-        assertThat(capture.result.execution().terminationReason()).isEqualTo(TerminationReason.COST_LIMIT_REACHED);
-        assertThat(capture.result.finalResponse().getContent()).isEqualTo("still working");
+        assertThat(capture.error()).isNull();
+        assertThat(capture.result()).isNotNull();
+        assertThat(capture.result().execution().terminationReason()).isEqualTo(TerminationReason.COST_LIMIT_REACHED);
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("still working");
         assertThat(calls.get()).isEqualTo(1);
-        assertThat(capture.messages).anyMatch(
+        assertThat(capture.messages()).anyMatch(
                 m -> m.type() == MessageType.WARNING && m.message().startsWith("Stopping early: cost limit"));
     }
 
@@ -230,10 +229,10 @@ class AgentLoopTest {
                 .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build())
                 .maxDuration(Duration.ofMillis(1)));
 
-        assertThat(capture.error).isNull();
-        assertThat(capture.result).isNotNull();
-        assertThat(capture.result.execution().terminationReason()).isEqualTo(TerminationReason.TIME_LIMIT_REACHED);
-        assertThat(capture.messages).anyMatch(
+        assertThat(capture.error()).isNull();
+        assertThat(capture.result()).isNotNull();
+        assertThat(capture.result().execution().terminationReason()).isEqualTo(TerminationReason.TIME_LIMIT_REACHED);
+        assertThat(capture.messages()).anyMatch(
                 m -> m.type() == MessageType.WARNING && m.message().startsWith("Stopping early: time limit"));
     }
 
@@ -260,30 +259,5 @@ class AgentLoopTest {
         ToolRegistry registry = new ToolRegistry();
         registration.accept(registry);
         return new AgentLoop(router, registry);
-    }
-
-    private static Capture run(AgentLoop loop, LoopRequest.LoopRequestBuilder builder) throws InterruptedException {
-        CountDownLatch latch = new CountDownLatch(1);
-        AtomicReference<AgentLoopResult> resultRef = new AtomicReference<>();
-        AtomicReference<Throwable> errorRef = new AtomicReference<>();
-        List<AgentMessage> messages = new java.util.concurrent.CopyOnWriteArrayList<>();
-
-        loop.run(builder
-                .onResult(r -> {
-                    resultRef.set(r);
-                    latch.countDown();
-                })
-                .onError(e -> {
-                    errorRef.set(e);
-                    latch.countDown();
-                })
-                .onMessage(messages::add)
-                .build());
-
-        assertThat(latch.await(5, TimeUnit.SECONDS)).as("run completed within timeout").isTrue();
-        return new Capture(resultRef.get(), errorRef.get(), messages);
-    }
-
-    private record Capture(AgentLoopResult result, Throwable error, List<AgentMessage> messages) {
     }
 }

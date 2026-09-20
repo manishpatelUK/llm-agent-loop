@@ -43,6 +43,8 @@ At a high level, one invocation of the looper:
    TextRank extractive summarizer with no model to load), escalating to an LLM summarization call
    via `llm-router` only if those aren't enough. Each strategy is tried in order, like
    `llm-router`'s own provider fallback, until the request fits or every strategy is exhausted.
+   This runs automatically, against the exact model each call actually targets, via an
+   `llm-router` 1.0.3+ hook — see `HistoryCompressor.newSelfCompressingRouter` below.
 6. **Follows an agent profile.** Similar in spirit to Claude "skills," each looper run is given an
    `AgentProfile` describing the agent's overall behavior — its plan mode, standing goals,
    planning guidance, operating context, and a hard step-count cap — which gets serialized into
@@ -61,15 +63,26 @@ implemented.
 
 Implemented so far (Java):
 - **Main entry point** (`io.github.manishpateluk.llmagentloop`) — `AgentLoop` is the library's
-  entry point, constructed with an `LlmRouter` (plus an optional `ToolRegistry` and a `MemoryStore`
-  placeholder) and run via `run(...)`, with progressively-defaulted overloads converging on the
-  canonical `run(LoopRequest)`. `LoopRequest` carries the prompt, an optional `AgentProfile`,
-  optional `File` attachments, and the run's three async callbacks: `onResult` (an
-  `AgentLoopResult` — the final `llm-router` `Response` plus the full `Execution` trace),
-  `onError`, and `onMessage` — status updates (`AgentMessage`: an execution id, a thread number, a
-  `MessageType`, a message body, a timestamp, and free-form metadata) meant for things like a
-  "thinking..." indicator on a frontend. Usage is always async — `run` returns immediately and the
-  work happens on a virtual thread, reporting back entirely through those callbacks.
+  entry point, run via `run(...)`, with progressively-defaulted overloads converging on the
+  canonical `run(LoopRequest)`.
+  - `AgentLoop.builder()` is the recommended way to construct one: `.adapters(...)` or `.router(...)`
+    (mutually exclusive; neither means auto-detect credentials from the environment), optional
+    `.tools(...)`/`.memory(...)`, and history compression **on by default** — `.compress(false)` to
+    disable it, or `.compressionMethods(...)` for a custom `CompressionMethod` preference list
+    instead of `HistoryCompressor.DEFAULT_METHODS`. When the builder assembles the router itself
+    (i.e. via `.adapters(...)`/auto-detect, not a caller-supplied `.router(...)`), compression is
+    wired in via `HistoryCompressor.newSelfCompressingRouter` — see below. The original constructors
+    (`new AgentLoop(router[, tools[, memory]])`) remain for callers that already have a
+    fully-assembled `LlmRouter` (e.g. one with its own `RequestInterceptor` for something other
+    than compression) and want no factory logic in the way; they do nothing with compression
+    automatically.
+  - `LoopRequest` carries the prompt, an optional `AgentProfile`, optional `File` attachments, and
+    the run's three async callbacks: `onResult` (an `AgentLoopResult` — the final `llm-router`
+    `Response` plus the full `Execution` trace), `onError`, and `onMessage` — status updates
+    (`AgentMessage`: an execution id, a thread number, a `MessageType`, a message body, a
+    timestamp, and free-form metadata) meant for things like a "thinking..." indicator on a
+    frontend. Usage is always async — `run` returns immediately and the work happens on a virtual
+    thread, reporting back entirely through those callbacks.
   - `AgentProfile.planMode` (see `PlanMode`) picks the run's shape: `NEVER_PLAN` bypasses the loop
     for a single one-shot call; `ALWAYS_PLAN` generates an explicit `Plan` (via structured output)
     and executes its steps in order; `RECURSIVE_ON_EACH_STEP` has no upfront plan — each step
@@ -101,19 +114,31 @@ Implemented so far (Java):
     extra to configure on this side to get that.
   - Known simplifications, called out rather than silently glossed over: an unregistered tool call
     ends the run via `onError` (`UnregisteredToolException`) rather than being handed back to the
-    caller to resolve; growing history isn't yet run through `HistoryCompressor` before each call,
-    since that needs a known target model and this loop doesn't pin one down ahead of a call.
+    caller to resolve; a compression-enabled router's history-compression events (see below) aren't
+    reflected in a run's `onMessage`/`Execution` trace, since that hook has no way to know which
+    run/thread a given call belongs to.
 - **History compression** (`io.github.manishpateluk.llmagentloop.compression`) — `HistoryCompressor`
   is the single entry point (`HistoryCompressor.compress(...)`, with progressively-defaulted
   overloads). It compares the request's estimated token size (padded 5% for safety) against the
   target model's context window — read from `llm-router`'s `ModelCapabilityTable`, the one
   in-memory copy of that data the whole library relies on — and, if it doesn't fit, walks an
   ordered `CompressionMethod` preference list (`STRUCTURAL_COMPACTION` →
-  `SLIDING_WINDOW_TRUNCATION` → `EXTRACTIVE_SUMMARIZATION` → `LLM_SUMMARIZATION` by default)
+  `EXTRACTIVE_SUMMARIZATION` → `LLM_SUMMARIZATION` → `SLIDING_WINDOW_TRUNCATION` by default)
   until the request fits or every method is exhausted, at which point it throws
   `CompressionExhaustedException` with a full per-attempt trail. All of the local methods are
   pure Java with no model to load, keeping the library's footprint suitable for modest hardware;
   `LLM_SUMMARIZATION` is the only tier that calls out, via a supplied `LlmRouter`.
+  - `HistoryCompressor.newSelfCompressingRouter(adapters[, methods])` builds an `LlmRouter` that
+    runs this compression automatically on every call it serves, against the exact model each
+    attempt actually targets — via `llm-router` 1.0.3's `RequestInterceptor` hook, a last-chance
+    callback to modify a request immediately before it's sent, run once per candidate in
+    `llm-router`'s own fallback loop (so a fallback to a different model recompresses correctly
+    against *that* model's context window too). Use it in place of `new LlmRouter(adapters)`
+    anywhere a router is constructed — including for `AgentLoop`, which needs no code changes to
+    benefit, since it already just uses whatever `LlmRouter` it's given. If every method is
+    exhausted for a candidate, the failure propagates out of the hook rather than being swallowed —
+    `llm-router` treats that like any other in-attempt failure and falls back to the next
+    candidate, which may have a larger context window and need no compression at all.
 
 ## Structure
 
