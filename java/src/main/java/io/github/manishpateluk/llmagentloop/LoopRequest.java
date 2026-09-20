@@ -1,6 +1,5 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.model.Response;
 import lombok.Builder;
 
 import java.io.File;
@@ -18,7 +17,7 @@ import java.util.function.Consumer;
  * @param prompt       required — what the caller wants done
  * @param agentProfile optional; see {@link AgentProfile}
  * @param files        optional file attachments; defaults to empty
- * @param onResult     required — called once with the final {@link Response}
+ * @param onResult     required — called once with the final {@link AgentLoopResult}
  * @param onError      required — called once if the run fails
  * @param onMessage    optional status-update callback; defaults to a no-op
  */
@@ -27,7 +26,7 @@ public record LoopRequest(
         String prompt,
         AgentProfile agentProfile,
         List<File> files,
-        Consumer<Response> onResult,
+        Consumer<AgentLoopResult> onResult,
         Consumer<Throwable> onError,
         Consumer<AgentMessage> onMessage) {
 

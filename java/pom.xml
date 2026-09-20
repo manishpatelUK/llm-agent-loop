@@ -19,6 +19,7 @@
     <maven.compiler.target>25</maven.compiler.target>
     <llm-router.version>1.0.1</llm-router.version>
     <lombok.version>1.18.38</lombok.version>
+    <jackson.version>2.18.2</jackson.version>
     <junit.version>5.11.4</junit.version>
     <assertj.version>3.26.3</assertj.version>
   </properties>
@@ -35,6 +36,15 @@
       <artifactId>lombok</artifactId>
       <version>${lombok.version}</version>
       <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <!-- Already a transitive compile-scope dependency of llm-router; declared explicitly so
+           our own direct use of it (parsing structured output, serializing AgentProfile) doesn't
+           silently depend on llm-router's internals. Version pinned to match llm-router's. -->
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
     </dependency>
 
     <dependency>

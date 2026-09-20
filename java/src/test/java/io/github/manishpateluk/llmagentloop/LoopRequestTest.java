@@ -1,10 +1,10 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.model.Response;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.List;
+import java.util.UUID;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LoopRequestTest {
 
-    private final Consumer<Response> onResult = response -> { };
+    private final Consumer<AgentLoopResult> onResult = result -> { };
     private final Consumer<Throwable> onError = error -> { };
 
     @Test
@@ -52,7 +52,7 @@ class LoopRequestTest {
         LoopRequest request = LoopRequest.builder().prompt("hi").onResult(onResult).onError(onError).build();
 
         assertThat(request.onMessage()).isNotNull();
-        request.onMessage().accept(AgentMessage.of(MessageType.INFO, "should not throw"));
+        request.onMessage().accept(AgentMessage.of(UUID.randomUUID(), 0, MessageType.INFO, "should not throw"));
     }
 
     @Test
