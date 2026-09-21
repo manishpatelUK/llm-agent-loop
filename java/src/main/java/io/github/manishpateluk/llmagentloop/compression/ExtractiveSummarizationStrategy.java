@@ -36,11 +36,11 @@ final class ExtractiveSummarizationStrategy implements CompressionStrategy {
             return message;
         }
         String condensed = TextRankSummarizer.summarize(message.getContent(), KEEP_FRACTION);
-        return switch (message.getRole()) {
-            case USER -> Message.user(condensed);
-            case ASSISTANT -> Message.assistant(condensed);
-            case TOOL -> Message.tool(condensed);
-            case SYSTEM -> message;
-        };
+        return Message.builder()
+                .role(message.getRole())
+                .content(condensed)
+                .toolCalls(message.getToolCalls())
+                .toolCallId(message.getToolCallId())
+                .build();
     }
 }

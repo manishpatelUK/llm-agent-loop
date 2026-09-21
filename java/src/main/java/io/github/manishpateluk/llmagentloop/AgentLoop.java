@@ -430,9 +430,8 @@ public final class AgentLoop {
                 }
 
                 if (!response.getToolCalls().isEmpty()) {
+                    history.add(Message.assistant(response.getContent(), response.getToolCalls()));
                     for (ToolCall call : response.getToolCalls()) {
-                        history.add(assistantNoteFor(response, "calling " + call.getName() + " with " + call.getArguments()));
-
                         Optional<RegisteredTool> registered = tools.find(call.getName());
                         if (registered.isEmpty()) {
                             throw new UnregisteredToolException(call.getName());
@@ -442,7 +441,7 @@ public final class AgentLoop {
                         String result = registered.get().handler().handle(call.getArguments());
                         emit(thread, MessageType.TOOL_RESULT, "Tool " + call.getName() + " returned a result.");
                         recordStep(thread, StepAction.TOOL_CALL, goal, call.getName(), result, null, response);
-                        history.add(Message.tool(result));
+                        history.add(Message.tool(call.getId(), result));
                     }
                     continue;
                 }

@@ -129,6 +129,70 @@ class AgentLoopTest {
     }
 
     @Test
+    void multipleToolCallsInOneTurnAreCorrelatedInHistory() throws InterruptedException {
+        registerModel();
+        AtomicInteger calls = new AtomicInteger();
+        List<com.manishpateluk.llmrouter.model.Request> capturedRequests = new java.util.concurrent.CopyOnWriteArrayList<>();
+        AgentLoop loop = newLoop(List.of(), request -> {
+            capturedRequests.add(request);
+            if (calls.incrementAndGet() == 1) {
+                return Response.builder()
+                        .content("")
+                        .toolCalls(List.of(
+                                ToolCall.builder().id("a").name("echo").arguments(Map.of("text", "hi")).build(),
+                                ToolCall.builder().id("b").name("shout").arguments(Map.of("text", "yo")).build()))
+                        .build();
+            }
+            return Response.builder()
+                    .content("")
+                    .toolCalls(List.of(ToolCall.builder()
+                            .id("c").name("report_complete").arguments(Map.of("finalAnswer", "done")).build()))
+                    .build();
+        }, registry -> registry
+                .register(com.manishpateluk.llmrouter.model.ToolDefinition.builder()
+                                .name("echo")
+                                .description("Echoes text back")
+                                .parameters(Map.of("type", "object"))
+                                .build(),
+                        args -> "echo:" + args.get("text"))
+                .register(com.manishpateluk.llmrouter.model.ToolDefinition.builder()
+                                .name("shout")
+                                .description("Shouts text back")
+                                .parameters(Map.of("type", "object"))
+                                .build(),
+                        args -> "SHOUT:" + args.get("text")));
+
+        Capture capture = run(loop, LoopRequest.builder()
+                .prompt("do two things")
+                .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build()));
+
+        assertThat(capture.error()).isNull();
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("done");
+        assertThat(capture.result().execution().steps())
+                .anyMatch(s -> "echo".equals(s.toolName()) && "echo:hi".equals(s.toolResult()));
+        assertThat(capture.result().execution().steps())
+                .anyMatch(s -> "shout".equals(s.toolName()) && "SHOUT:yo".equals(s.toolResult()));
+
+        // The second call's history is where the fix matters: one correlated assistant turn
+        // carrying both requested calls, followed by two tool-result turns keyed by call id.
+        List<com.manishpateluk.llmrouter.model.Message> history = capturedRequests.get(1).getHistory();
+
+        com.manishpateluk.llmrouter.model.Message assistantTurn = history.stream()
+                .filter(m -> m.getRole() == com.manishpateluk.llmrouter.model.Role.ASSISTANT)
+                .findFirst().orElseThrow();
+        assertThat(assistantTurn.getToolCalls()).extracting(ToolCall::getId).containsExactly("a", "b");
+
+        List<com.manishpateluk.llmrouter.model.Message> toolResults = history.stream()
+                .filter(m -> m.getRole() == com.manishpateluk.llmrouter.model.Role.TOOL)
+                .toList();
+        assertThat(toolResults).hasSize(2);
+        assertThat(toolResults.get(0).getToolCallId()).isEqualTo("a");
+        assertThat(toolResults.get(0).getContent()).isEqualTo("echo:hi");
+        assertThat(toolResults.get(1).getToolCallId()).isEqualTo("b");
+        assertThat(toolResults.get(1).getContent()).isEqualTo("SHOUT:yo");
+    }
+
+    @Test
     void unregisteredToolCallEndsTheRunWithAnError() throws InterruptedException {
         registerModel();
         AgentLoop loop = newLoop(request -> Response.builder()

@@ -46,12 +46,17 @@ final class StructuralCompactionStrategy implements CompressionStrategy {
         return RUNS_OF_SPACES.matcher(collapsedBlankLines).replaceAll(" ").strip();
     }
 
+    /**
+     * Preserves {@code toolCalls}/{@code toolCallId} across the rewrite — losing either would
+     * silently regress a native tool-call/tool-result turn back to flattened text once it's
+     * compressed (see {@code Message}'s class-level doc in llm-router).
+     */
     private static Message withContent(Message message, String content) {
-        return switch (message.getRole()) {
-            case USER -> Message.user(content);
-            case ASSISTANT -> Message.assistant(content);
-            case SYSTEM -> Message.system(content);
-            case TOOL -> Message.tool(content);
-        };
+        return Message.builder()
+                .role(message.getRole())
+                .content(content)
+                .toolCalls(message.getToolCalls())
+                .toolCallId(message.getToolCallId())
+                .build();
     }
 }
