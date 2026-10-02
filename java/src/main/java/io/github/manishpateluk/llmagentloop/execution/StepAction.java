@@ -15,6 +15,13 @@ public enum StepAction {
     /** A sub-task was delegated to a new thread. */
     SUB_TASK,
 
+    /**
+     * A compression-enabled router compressed (or failed to compress) this thread's next call to
+     * fit its target model; the step's {@code description} says which. No {@code response} — it
+     * happened inside the call, before anything was sent.
+     */
+    HISTORY_COMPRESSION,
+
     /** The thread's goal was declared complete. */
     COMPLETE,
 

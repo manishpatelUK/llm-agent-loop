@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 /**
  * Compresses a {@link Request} so it fits the context window of the model it's about to be sent
@@ -31,7 +32,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * <p>{@link #newSelfCompressingRouter} builds an {@link LlmRouter} that runs this compression
  * automatically, via {@code llm-router}'s {@link RequestInterceptor} hook, against the exact
  * model each attempt is about to be sent to — the recommended way to get compression for free
- * without any caller (e.g. {@code AgentLoop}) needing to know about it.
+ * without any caller (e.g. {@code AgentLoop}) needing to know about it. Since that hook has no
+ * reference back to whoever made the call, {@link #withListener} is how a caller hears about
+ * what compression did on its behalf.
  */
 public final class HistoryCompressor {
 
@@ -51,7 +54,21 @@ public final class HistoryCompressor {
             CompressionMethod.EXTRACTIVE_SUMMARIZATION, new ExtractiveSummarizationStrategy(),
             CompressionMethod.LLM_SUMMARIZATION, new LlmSummarizationStrategy());
 
+    /** Bound per caller by {@link #withListener}; read by every {@link #compress} call made in that scope. */
+    private static final ScopedValue<CompressionListener> LISTENER = ScopedValue.newInstance();
+
     private HistoryCompressor() {
+    }
+
+    /**
+     * Runs {@code work}, reporting every {@link #compress} call it makes — directly, or via a
+     * {@link #newSelfCompressingRouter self-compressing router} — to {@code listener}. Scoped to
+     * the calling thread, so it covers {@code LlmRouter.complete}, whose interceptor runs on the
+     * caller's thread; it does not follow {@code completeAsync} fallbacks onto other threads.
+     */
+    public static <T> T withListener(CompressionListener listener, Supplier<T> work) {
+        Objects.requireNonNull(listener, "listener");
+        return ScopedValue.where(LISTENER, listener).call(work::get);
     }
 
     /** Auto-detects credentials (same as {@code new LlmRouter()}); compresses using {@link #DEFAULT_METHODS}. */
@@ -161,7 +178,12 @@ public final class HistoryCompressor {
                     current = candidate;
                     currentTokens = candidateTokens;
                     if (currentTokens <= targetTokens) {
-                        return CompressionOutcome.compressed(current, estimatedTokens, currentTokens, targetTokens, attempts);
+                        CompressionOutcome outcome =
+                                CompressionOutcome.compressed(current, estimatedTokens, currentTokens, targetTokens, attempts);
+                        if (LISTENER.isBound()) {
+                            LISTENER.get().compressed(provider, model, outcome);
+                        }
+                        return outcome;
                     }
                 } else {
                     attempts.add(CompressionAttempt.failure(method, currentTokens, "no token reduction achieved"));
@@ -171,6 +193,10 @@ public final class HistoryCompressor {
             }
         }
 
-        throw new CompressionExhaustedException(targetTokens, currentTokens, attempts);
+        CompressionExhaustedException exhausted = new CompressionExhaustedException(targetTokens, currentTokens, attempts);
+        if (LISTENER.isBound()) {
+            LISTENER.get().exhausted(provider, model, exhausted);
+        }
+        throw exhausted;
     }
 }

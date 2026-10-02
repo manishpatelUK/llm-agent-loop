@@ -1,5 +1,6 @@
 package io.github.manishpateluk.llmagentloop;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.manishpateluk.llmrouter.LlmRouter;
 import com.manishpateluk.llmrouter.RequestInterceptor;
@@ -11,7 +12,12 @@ import com.manishpateluk.llmrouter.model.Response;
 import com.manishpateluk.llmrouter.model.ToolCall;
 import com.manishpateluk.llmrouter.model.ToolDefinition;
 import com.manishpateluk.llmrouter.provider.ProviderAdapter;
+import com.manishpateluk.llmrouter.provider.Provider;
+import io.github.manishpateluk.llmagentloop.compression.CompressionAttempt;
+import io.github.manishpateluk.llmagentloop.compression.CompressionExhaustedException;
+import io.github.manishpateluk.llmagentloop.compression.CompressionListener;
 import io.github.manishpateluk.llmagentloop.compression.CompressionMethod;
+import io.github.manishpateluk.llmagentloop.compression.CompressionOutcome;
 import io.github.manishpateluk.llmagentloop.compression.HistoryCompressor;
 import io.github.manishpateluk.llmagentloop.execution.Execution;
 import io.github.manishpateluk.llmagentloop.execution.StepAction;
@@ -35,6 +41,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
@@ -44,7 +51,8 @@ import java.util.function.Consumer;
  * The library's main entry point: turns a single {@link LoopRequest} into a completed task by
  * recursively calling an LLM (via the {@link LlmRouter} supplied at construction) — running
  * tools, checking for completion, and possibly branching into sub-tasks — until the goal is
- * satisfied or {@link AgentProfile#maxSteps()} is exceeded. Reporting is entirely through
+ * satisfied or {@link AgentProfile#maxSteps()} is exceeded — every LLM call the run makes (the
+ * {@code AUTO} plan check and plan generation included) counts as a step. Reporting is entirely through
  * callbacks; usage is always asynchronous, there is no blocking call.
  *
  * <p><b>{@link #builder()} is the recommended way to construct one</b> — it assembles a router
@@ -65,17 +73,20 @@ import java.util.function.Consumer;
  * continuing to the next step. {@code Execution.terminationReason()} on the result says whether
  * that happened.
  *
+ * <p>When the router compresses history (see {@code HistoryCompressor.newSelfCompressingRouter}),
+ * each compression is reported on this run's {@code onMessage} and recorded in its
+ * {@code Execution} as a {@code HISTORY_COMPRESSION} step, via {@code HistoryCompressor.withListener}.
+ *
  * <p>Known simplifications in this pass, called out rather than silently glossed over: branches
  * (sub-tasks, and a {@code Plan}'s parallel-grouped steps) execute sequentially, not concurrently;
- * an unregistered tool call ends the run via {@link LoopRequest#onError()} rather than being
- * handed back to the caller to resolve; and a compression-enabled router's history-compression
- * events aren't reflected in this run's {@code onMessage}/{@code Execution} trace — that hook has
- * no way to know which {@code AgentLoop} run/thread a given call belongs to.
+ * and an unregistered tool call ends the run via {@link LoopRequest#onError()} rather than being
+ * handed back to the caller to resolve.
  */
 public final class AgentLoop {
 
     private static final ExecutorService EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
-    private static final ObjectMapper JSON = new ObjectMapper();
+    /** Lenient: structured output carries fields the records don't (e.g. a plan's {@code summary}), and models add extras. */
+    private static final ObjectMapper JSON = new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     /** Turns end without calling any tool at all still get a final answer, rather than failing the run. */
     private static final String NO_TOOL_CALL_FALLBACK_NOTE =
@@ -237,7 +248,7 @@ public final class AgentLoop {
      * confined to the single virtual thread {@link #execute()} runs on (branches execute
      * sequentially on that same thread this pass, so no synchronization is needed here).
      */
-    private final class Run {
+    private final class Run implements CompressionListener {
 
         private final LoopRequest request;
         private final AgentProfile profile;
@@ -256,6 +267,8 @@ public final class AgentLoop {
         private final List<StepRecord> steps = new ArrayList<>();
         private final Instant startedAt = Instant.now();
         private int nextThread = 1;
+        /** The thread whose LLM call is in flight — what any compression reported mid-call is attributed to. */
+        private int currentThread = 0;
         private int stepCount = 0;
         private int accumulatedCostUsdCents = 0;
 
@@ -266,6 +279,13 @@ public final class AgentLoop {
         }
 
         void execute() {
+            HistoryCompressor.withListener(this, () -> {
+                executeInScope();
+                return null;
+            });
+        }
+
+        private void executeInScope() {
             try {
                 if (profile.planMode() == PlanMode.NEVER_PLAN) {
                     runNeverPlan();
@@ -304,8 +324,7 @@ public final class AgentLoop {
                     .systemInstructions(profile.toSystemInstructionsFragment())
                     .attachments(attachments)
                     .build();
-            Response response = router.complete(req);
-            checkBudgets(0, response);
+            Response response = call(0, req);
             recordStep(0, StepAction.COMPLETE, request.prompt(), null, null, response.getContent(), response);
             complete(response, TerminationReason.COMPLETED);
         }
@@ -321,8 +340,7 @@ public final class AgentLoop {
                     .responseSchema(AgentLoopSchemas.PLAN_NEEDED_SCHEMA)
                     .config(RouterConfig.builder().costOptimized(true).build())
                     .build();
-            Response response = router.complete(req);
-            checkBudgets(0, response);
+            Response response = call(0, req);
 
             Map<String, Object> out = response.getStructuredOutput();
             boolean needsPlan = out != null && Boolean.TRUE.equals(out.get("needsPlan"));
@@ -343,8 +361,7 @@ public final class AgentLoop {
                     .attachments(attachments)
                     .responseSchema(AgentLoopSchemas.PLAN_SCHEMA)
                     .build();
-            Response response = router.complete(req);
-            checkBudgets(0, response);
+            Response response = call(0, req);
 
             Map<String, Object> out = response.getStructuredOutput();
             if (out == null) {
@@ -358,7 +375,13 @@ public final class AgentLoop {
             return plan;
         }
 
+        /**
+         * Steps share {@code history}, seeded with the overall goal (each step's own prompt is
+         * only its description) and accumulating each completed step's answer, so later steps
+         * build on earlier ones rather than starting blind.
+         */
         private StepOutcome executePlan(Plan plan, String systemInstructions, List<Message> history, int thread) {
+            history.add(Message.user("Overall goal: " + request.prompt()));
             StepOutcome last = null;
             for (PlanStep planStep : plan.steps()) {
                 emit(thread, MessageType.PROGRESS, "Starting plan step: " + planStep.description());
@@ -379,8 +402,6 @@ public final class AgentLoop {
             emit(thread, MessageType.THINKING, "Working on: " + goal);
 
             while (true) {
-                checkStepBudget();
-
                 List<ToolDefinition> availableTools = new ArrayList<>(tools.definitions());
                 availableTools.add(AgentLoopSchemas.REPORT_COMPLETE);
                 if (allowSubTasks) {
@@ -400,15 +421,16 @@ public final class AgentLoop {
                         .attachments(attachments)
                         .tools(List.copyOf(availableTools))
                         .build();
-                Response response = router.complete(req);
-                checkBudgets(thread, response);
+                Response response = call(thread, req);
 
                 Optional<ToolCall> complete = findToolCall(response, AgentLoopSchemas.REPORT_COMPLETE_TOOL);
                 if (complete.isPresent()) {
+                    warnIgnoredToolCalls(thread, response, complete.get());
                     String finalAnswer = String.valueOf(
                             complete.get().getArguments().getOrDefault("finalAnswer", response.getContent()));
                     emit(thread, MessageType.INFO, "Goal complete.");
                     recordStep(thread, StepAction.COMPLETE, goal, null, null, finalAnswer, response);
+                    history.add(Message.assistant("Completed: " + goal + "\n\n" + finalAnswer));
                     return new StepOutcome(finalAnswer, response);
                 }
 
@@ -416,6 +438,7 @@ public final class AgentLoop {
                         ? findToolCall(response, AgentLoopSchemas.SPAWN_SUB_TASK_TOOL)
                         : Optional.empty();
                 if (subTask.isPresent()) {
+                    warnIgnoredToolCalls(thread, response, subTask.get());
                     String subGoal = String.valueOf(subTask.get().getArguments().get("goal"));
                     int subThread = nextThread++;
                     emit(thread, MessageType.PROGRESS, "Delegating sub-task: " + subGoal);
@@ -424,8 +447,8 @@ public final class AgentLoop {
                     StepOutcome subOutcome =
                             runGoalDirected(subGoal, systemInstructions, new ArrayList<>(history), subThread, true);
 
-                    history.add(assistantNoteFor(response, "spawning sub-task: " + subGoal));
-                    history.add(Message.tool(subOutcome.finalAnswer()));
+                    history.add(Message.assistant(response.getContent(), List.of(subTask.get())));
+                    history.add(Message.tool(subTask.get().getId(), subOutcome.finalAnswer()));
                     continue;
                 }
 
@@ -453,6 +476,51 @@ public final class AgentLoop {
             }
         }
 
+        /** Every LLM call the run makes goes through here, so each one counts toward {@code maxSteps} and the budgets. */
+        private Response call(int thread, Request req) {
+            checkStepBudget();
+            currentThread = thread;
+            Response response = router.complete(req);
+            checkBudgets(thread, response);
+            return response;
+        }
+
+        /**
+         * A control tool ({@code report_complete}/{@code spawn_sub_task}) is acted on alone; any
+         * other calls in the same response are never executed, so say so rather than dropping them silently.
+         */
+        private void warnIgnoredToolCalls(int thread, Response response, ToolCall handled) {
+            List<String> ignored = response.getToolCalls().stream()
+                    .filter(call -> call != handled)
+                    .map(ToolCall::getName)
+                    .toList();
+            if (!ignored.isEmpty()) {
+                emit(thread, MessageType.WARNING, "Ignoring " + ignored.size() + " other tool call(s) requested alongside "
+                        + handled.getName() + ": " + String.join(", ", ignored));
+            }
+        }
+
+        @Override
+        public void compressed(Provider provider, String model, CompressionOutcome outcome) {
+            String methods = outcome.attempts().stream()
+                    .filter(CompressionAttempt::succeeded)
+                    .map(attempt -> attempt.method().name())
+                    .collect(Collectors.joining(", "));
+            String description = "Compressed history for " + provider + "/" + model + " from ~"
+                    + outcome.originalEstimatedTokens() + " to ~" + outcome.finalEstimatedTokens()
+                    + " tokens (target " + outcome.targetTokens() + ") via " + methods;
+            emit(currentThread, MessageType.INFO, description);
+            recordStep(currentThread, StepAction.HISTORY_COMPRESSION, description, null, null, null, null);
+        }
+
+        @Override
+        public void exhausted(Provider provider, String model, CompressionExhaustedException failure) {
+            String description = "Could not compress history to fit " + provider + "/" + model
+                    + "; the router will try its next candidate, if any";
+            emit(currentThread, MessageType.WARNING, description);
+            recordStep(currentThread, StepAction.HISTORY_COMPRESSION, description, null, null, null, null);
+        }
+
         private void checkStepBudget() {
             stepCount++;
             if (stepCount > profile.maxSteps()) {
@@ -473,7 +541,7 @@ public final class AgentLoop {
 
             Integer maxCost = request.maxCostUsdCents();
             if (maxCost != null && accumulatedCostUsdCents >= maxCost) {
-                emit(thread, MessageType.WARNING, "Stopping early: cost limit reached");
+                emit(thread, MessageType.WARNING, "Stopping early: cost limit reached.");
                 throw new BudgetExceeded(thread, TerminationReason.COST_LIMIT_REACHED, response);
             }
 
@@ -541,17 +609,6 @@ public final class AgentLoop {
 
     private static Optional<ToolCall> findToolCall(Response response, String name) {
         return response.getToolCalls().stream().filter(call -> name.equals(call.getName())).findFirst();
-    }
-
-    /**
-     * Since {@code llm-router}'s {@code Message} shape has no slot for a tool-call request itself
-     * (only plain role+content), this folds what the assistant decided to do into its own history
-     * turn so the flattened history stays coherent even when the model returned no accompanying text.
-     */
-    private static Message assistantNoteFor(Response response, String action) {
-        String content = response.getContent();
-        String prefix = (content == null || content.isBlank()) ? "" : content + "\n\n";
-        return Message.assistant(prefix + "[" + action + "]");
     }
 
     private static List<Attachment> toAttachments(List<File> files) {

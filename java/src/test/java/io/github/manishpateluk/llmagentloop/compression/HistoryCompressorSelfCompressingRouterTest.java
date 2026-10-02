@@ -108,6 +108,42 @@ class HistoryCompressorSelfCompressingRouterTest {
         assertThat(roomyAdapter.lastRequestReceived()).isNotNull();
     }
 
+    @Test
+    void withListenerReportsCompressionAndExhaustionFromInsideTheRoutersInterceptor() {
+        registerModel(Provider.ANTHROPIC, TINY_MODEL, 50, 5);
+        LlmRouter router = HistoryCompressor.newSelfCompressingRouter(List.of(new CapturingProviderAdapter(Provider.ANTHROPIC)));
+        List<CompressionOutcome> compressed = new ArrayList<>();
+        List<CompressionExhaustedException> exhausted = new ArrayList<>();
+        CompressionListener listener = new CompressionListener() {
+            @Override
+            public void compressed(Provider provider, String model, CompressionOutcome outcome) {
+                compressed.add(outcome);
+            }
+
+            @Override
+            public void exhausted(Provider provider, String model, CompressionExhaustedException failure) {
+                exhausted.add(failure);
+            }
+        };
+
+        HistoryCompressor.withListener(listener, () -> router.complete(Request.builder()
+                .prompt("what's next?")
+                .history(bigHistory(20))
+                .config(routeTo(Provider.ANTHROPIC, TINY_MODEL))
+                .build()));
+
+        assertThat(compressed).singleElement().satisfies(outcome -> assertThat(outcome.compressionApplied()).isTrue());
+        assertThat(exhausted).isEmpty();
+
+        ModelCapabilityTable.removeModel(Provider.ANTHROPIC, TINY_MODEL);
+        registerModel(Provider.ANTHROPIC, TINY_MODEL, 1, 0);
+        assertThatThrownBy(() -> HistoryCompressor.withListener(listener, () -> router.complete(Request.builder()
+                .prompt("a prompt that alone already exceeds a 1-token budget")
+                .config(routeTo(Provider.ANTHROPIC, TINY_MODEL))
+                .build()))).isInstanceOf(RouterExhaustedException.class);
+        assertThat(exhausted).hasSize(1);
+    }
+
     private static RouterConfig routeTo(Provider provider, String model) {
         return RouterConfig.builder().route(List.of(RouteEntry.of(provider, model))).build();
     }

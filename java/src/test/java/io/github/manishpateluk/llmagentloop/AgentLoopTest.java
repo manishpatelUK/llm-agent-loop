@@ -3,11 +3,18 @@ package io.github.manishpateluk.llmagentloop;
 import com.manishpateluk.llmrouter.LlmRouter;
 import com.manishpateluk.llmrouter.capability.ModelCapabilityTable;
 import com.manishpateluk.llmrouter.capability.ModelEntry;
+import com.manishpateluk.llmrouter.model.Message;
+import com.manishpateluk.llmrouter.model.Request;
 import com.manishpateluk.llmrouter.model.Response;
+import com.manishpateluk.llmrouter.model.Role;
 import com.manishpateluk.llmrouter.model.ToolCall;
+import com.manishpateluk.llmrouter.model.ToolDefinition;
 import com.manishpateluk.llmrouter.model.Usage;
 import com.manishpateluk.llmrouter.provider.Provider;
 import io.github.manishpateluk.llmagentloop.AgentLoopRunSupport.Capture;
+import io.github.manishpateluk.llmagentloop.compression.CompressionMethod;
+import io.github.manishpateluk.llmagentloop.compression.HistoryCompressor;
+import io.github.manishpateluk.llmagentloop.execution.StepAction;
 import io.github.manishpateluk.llmagentloop.execution.TerminationReason;
 import io.github.manishpateluk.llmagentloop.tool.ToolRegistry;
 import org.junit.jupiter.api.AfterEach;
@@ -16,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.github.manishpateluk.llmagentloop.AgentLoopRunSupport.run;
@@ -25,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AgentLoopTest {
 
     private static final String MODEL = "test-agent-loop-model";
+    private static final String TINY_MODEL = "test-agent-loop-tiny-model";
 
     @AfterEach
     void removeSyntheticModel() {
@@ -298,6 +307,170 @@ class AgentLoopTest {
         assertThat(capture.result().execution().terminationReason()).isEqualTo(TerminationReason.TIME_LIMIT_REACHED);
         assertThat(capture.messages()).anyMatch(
                 m -> m.type() == MessageType.WARNING && m.message().startsWith("Stopping early: time limit"));
+    }
+
+    @Test
+    void planStepsSeeTheOverallGoalAndEarlierStepsAnswers() throws InterruptedException {
+        registerModel();
+        List<Request> stepRequests = new CopyOnWriteArrayList<>();
+        AgentLoop loop = newLoop(request -> {
+            if (request.getPrompt().contains("Produce an ordered list of steps")) {
+                return Response.builder()
+                        .content("{\"summary\":\"two steps\",\"steps\":[{\"description\":\"step one\"},{\"description\":\"step two\"}]}")
+                        .build();
+            }
+            stepRequests.add(request);
+            return reportComplete("answer " + stepRequests.size());
+        });
+
+        Capture capture = run(loop, LoopRequest.builder()
+                .prompt("Do it in two steps")
+                .agentProfile(AgentProfile.builder().planMode(PlanMode.ALWAYS_PLAN).build()));
+
+        assertThat(capture.error()).isNull();
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("answer 2");
+        assertThat(stepRequests).hasSize(2);
+
+        List<Message> stepTwoHistory = stepRequests.get(1).getHistory();
+        assertThat(stepTwoHistory).anyMatch(m -> m.getRole() == Role.USER
+                && m.getContent().equals("Overall goal: Do it in two steps"));
+        assertThat(stepTwoHistory).anyMatch(m -> m.getRole() == Role.ASSISTANT
+                && m.getContent().contains("step one") && m.getContent().contains("answer 1"));
+    }
+
+    @Test
+    void subTaskResultIsCorrelatedToItsSpawnCallInHistory() throws InterruptedException {
+        registerModel();
+        List<Request> requests = new CopyOnWriteArrayList<>();
+        AgentLoop loop = newLoop(request -> {
+            requests.add(request);
+            return switch (requests.size()) {
+                case 1 -> Response.builder()
+                        .content("")
+                        .toolCalls(List.of(ToolCall.builder()
+                                .id("s1").name("spawn_sub_task").arguments(Map.of("goal", "the sub-goal")).build()))
+                        .build();
+                case 2 -> reportComplete("sub answer");
+                default -> reportComplete("done");
+            };
+        });
+
+        Capture capture = run(loop, LoopRequest.builder()
+                .prompt("Delegate something")
+                .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build()));
+
+        assertThat(capture.error()).isNull();
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("done");
+
+        List<Message> parentHistory = requests.get(2).getHistory();
+        Message spawnTurn = parentHistory.stream().filter(m -> m.getRole() == Role.ASSISTANT).findFirst().orElseThrow();
+        assertThat(spawnTurn.getToolCalls()).extracting(ToolCall::getId).containsExactly("s1");
+        Message resultTurn = parentHistory.stream().filter(m -> m.getRole() == Role.TOOL).findFirst().orElseThrow();
+        assertThat(resultTurn.getToolCallId()).isEqualTo("s1");
+        assertThat(resultTurn.getContent()).isEqualTo("sub answer");
+    }
+
+    @Test
+    void toolCallsRequestedAlongsideReportCompleteAreReportedNotSilentlyDropped() throws InterruptedException {
+        registerModel();
+        AtomicInteger echoCalls = new AtomicInteger();
+        AgentLoop loop = newLoop(List.of(), request -> Response.builder()
+                .content("")
+                .toolCalls(List.of(
+                        ToolCall.builder().id("1").name("echo").arguments(Map.of("text", "hi")).build(),
+                        ToolCall.builder().id("2").name("report_complete").arguments(Map.of("finalAnswer", "done")).build()))
+                .build(), registry -> registry.register(
+                ToolDefinition.builder().name("echo").description("Echoes text back").parameters(Map.of("type", "object")).build(),
+                args -> {
+                    echoCalls.incrementAndGet();
+                    return "echo";
+                }));
+
+        Capture capture = run(loop, LoopRequest.builder()
+                .prompt("Finish")
+                .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build()));
+
+        assertThat(capture.error()).isNull();
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("done");
+        assertThat(echoCalls.get()).isZero();
+        assertThat(capture.messages()).anyMatch(m -> m.type() == MessageType.WARNING
+                && m.message().contains("report_complete") && m.message().contains("echo"));
+    }
+
+    @Test
+    void planCheckAndPlanGenerationCountTowardMaxSteps() throws InterruptedException {
+        registerModel();
+        AtomicInteger stepCalls = new AtomicInteger();
+        AgentLoop loop = newLoop(request -> {
+            boolean isPlanCheck = request.getPrompt().contains("Does accomplishing this require");
+            if (isPlanCheck || request.getPrompt().contains("Produce an ordered list of steps")) {
+                return Response.builder()
+                        .content(isPlanCheck
+                                ? "{\"needsPlan\":true,\"reason\":\"multi-step\"}"
+                                : "{\"summary\":\"one step\",\"steps\":[{\"description\":\"step one\"}]}")
+                        .build();
+            }
+            stepCalls.incrementAndGet();
+            return reportComplete("done");
+        });
+
+        // AUTO: plan check (1) + plan generation (2) exhausts maxSteps before the plan's first step runs.
+        Capture capture = run(loop, LoopRequest.builder()
+                .prompt("Plan this")
+                .agentProfile(AgentProfile.builder().planMode(PlanMode.AUTO).maxSteps(2).build()));
+
+        assertThat(capture.result()).isNull();
+        assertThat(capture.error()).isInstanceOf(AgentLoopStepLimitExceededException.class);
+        assertThat(stepCalls.get()).isZero();
+    }
+
+    @Test
+    void historyCompressionIsReportedInMessagesAndTheExecutionTrace() throws InterruptedException {
+        registerModel();
+        ModelCapabilityTable.registerModel(ModelEntry.builder()
+                .provider(Provider.ANTHROPIC)
+                .model(TINY_MODEL)
+                .contextWindowTokens(6_500)
+                .maxOutputTokens(0)
+                .build());
+        try {
+            AtomicInteger calls = new AtomicInteger();
+            LlmRouter router = new LlmRouter(
+                    List.of(new FakeProviderAdapter(request -> calls.incrementAndGet() <= 3
+                            ? Response.builder()
+                                    .content("")
+                                    .toolCalls(List.of(ToolCall.builder()
+                                            .id("t" + calls.get()).name("bulky").arguments(Map.of()).build()))
+                                    .build()
+                            : reportComplete("done"))),
+                    // Pins compression to a tiny synthetic model regardless of which model the router actually picks.
+                    (provider, model, request) -> HistoryCompressor.compress(
+                            request, Provider.ANTHROPIC, TINY_MODEL, List.of(CompressionMethod.SLIDING_WINDOW_TRUNCATION)).request());
+            ToolRegistry registry = new ToolRegistry().register(
+                    ToolDefinition.builder().name("bulky").description("Returns a lot").parameters(Map.of("type", "object")).build(),
+                    args -> "x".repeat(10_000)); // ~2,500 tokens; three of them overflow the 6,500-token window
+            AgentLoop loop = new AgentLoop(router, registry);
+
+            Capture capture = run(loop, LoopRequest.builder()
+                    .prompt("Gather a lot")
+                    .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build()));
+
+            assertThat(capture.error()).isNull();
+            assertThat(capture.messages()).anyMatch(m -> m.type() == MessageType.INFO
+                    && m.message().startsWith("Compressed history") && m.message().contains("SLIDING_WINDOW_TRUNCATION"));
+            assertThat(capture.result().execution().steps())
+                    .anyMatch(s -> s.action() == StepAction.HISTORY_COMPRESSION && s.thread() == 0);
+        } finally {
+            ModelCapabilityTable.removeModel(Provider.ANTHROPIC, TINY_MODEL);
+        }
+    }
+
+    private static Response reportComplete(String finalAnswer) {
+        return Response.builder()
+                .content("")
+                .toolCalls(List.of(ToolCall.builder()
+                        .id("rc").name("report_complete").arguments(Map.of("finalAnswer", finalAnswer)).build()))
+                .build();
     }
 
     private static void registerModel() {

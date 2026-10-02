@@ -97,8 +97,14 @@ Implemented so far (Java):
     `Execution`, keyed by a random execution id; branches (sub-tasks, and a `Plan`'s
     parallel-grouped steps) execute sequentially this pass, not concurrently.
   - `maxSteps` on `AgentProfile` (default 25, no way to request unbounded) is the safety net
-    against runaway recursion until real cost/time budgets exist
-    (`AgentLoopStepLimitExceededException`).
+    against runaway recursion (`AgentLoopStepLimitExceededException`). Every LLM call the run
+    makes counts as a step — including `AUTO`'s plan-needed check and plan generation.
+  - A `Plan`'s steps share one history, seeded with the overall goal and accumulating each
+    completed step's answer, so later steps build on earlier ones. A sub-task's result is folded
+    back as a tool result correlated (by call id) to the `spawn_sub_task` call that requested it.
+  - When a response pairs a control tool (`report_complete`/`spawn_sub_task`) with other tool
+    calls, only the control tool is acted on — the others are reported via a `WARNING`
+    `AgentMessage`, never dropped silently.
   - `LoopRequest.maxCostUsdCents` and `maxDuration` are optional, approximate per-run bounds —
     unlike `maxSteps`, they default to unbounded (current no-bound behavior) and, when set, stop
     the run *gracefully* rather than failing it: checked after each step completes (not mid-step,
@@ -112,11 +118,12 @@ Implemented so far (Java):
     is exactly what `llm-router` 1.0.2+ needs to deduplicate repeat file uploads by content hash
     (via each provider's own Files API) instead of re-embedding the same bytes every turn. Nothing
     extra to configure on this side to get that.
+  - When the router compresses history, each compression (or failure to fit) is reported on the
+    run's `onMessage` and recorded in its `Execution` as a `HISTORY_COMPRESSION` step, attributed
+    to the thread whose call triggered it — via `HistoryCompressor.withListener` (see below).
   - Known simplifications, called out rather than silently glossed over: an unregistered tool call
     ends the run via `onError` (`UnregisteredToolException`) rather than being handed back to the
-    caller to resolve; a compression-enabled router's history-compression events (see below) aren't
-    reflected in a run's `onMessage`/`Execution` trace, since that hook has no way to know which
-    run/thread a given call belongs to.
+    caller to resolve.
 - **History compression** (`io.github.manishpateluk.llmagentloop.compression`) — `HistoryCompressor`
   is the single entry point (`HistoryCompressor.compress(...)`, with progressively-defaulted
   overloads). It compares the request's estimated token size (padded 5% for safety) against the

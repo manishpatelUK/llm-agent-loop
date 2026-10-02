@@ -100,7 +100,7 @@ AgentProfile profile = AgentProfile.builder()
     .goals(List.of("Keep responses under 200 words", "Always cite sources"))
     .planningGuidance(List.of("Prefer 3-5 step plans over single large steps"))
     .operatingContext("You are the support agent for Acme Inc, a B2B SaaS company.")
-    .maxSteps(15) // hard cap across the whole run; defaults to 25, no way to request unbounded
+    .maxSteps(15) // hard cap on LLM calls across the whole run (planning included); defaults to 25, no way to request unbounded
     .build();
 ```
 
@@ -176,7 +176,9 @@ AgentLoop loop = AgentLoop.builder()
     .build(); // custom preference list instead of HistoryCompressor.DEFAULT_METHODS
 ```
 
-`HistoryCompressor` (`io.github.manishpateluk.llmagentloop.compression`) can also be used standalone, or wired into your own `llm-router` setup via `HistoryCompressor.newSelfCompressingRouter(...)`, independent of `AgentLoop`.
+Each compression shows up as an `INFO` status update (or a `WARNING` if the request couldn't be made to fit and the router is falling back to its next candidate) and as a `HISTORY_COMPRESSION` step in the `Execution` trace. That works with a caller-supplied `.router(...)` too, as long as it compresses via `HistoryCompressor`.
+
+`HistoryCompressor` (`io.github.manishpateluk.llmagentloop.compression`) can also be used standalone, or wired into your own `llm-router` setup via `HistoryCompressor.newSelfCompressingRouter(...)`, independent of `AgentLoop`. To hear about what it did from your own code, wrap the call in `HistoryCompressor.withListener(listener, () -> router.complete(request))` — the listener is scoped to the calling thread, so it covers `complete(...)` but not `completeAsync(...)`.
 
 ### Long-term memory
 
