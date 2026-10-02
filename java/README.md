@@ -136,7 +136,19 @@ tools.register(
 AgentLoop loop = AgentLoop.builder().tools(tools).build();
 ```
 
-A tool handler (`ToolHandler`) takes the model's parsed call arguments and returns a result string, which is fed back into the conversation. If the model calls a tool that isn't registered, the run ends via `onError` with an `UnregisteredToolException`.
+A tool handler (`ToolHandler`) takes the model's parsed call arguments and returns a result string, which is fed back into the conversation. If the model calls a tool that isn't registered, it's handed to `LoopRequest.onUnregisteredTool` to resolve:
+
+```java
+loop.run(LoopRequest.builder()
+    .prompt("...")
+    .onUnregisteredTool(call -> call.getName().equals("ask_human")
+            ? Optional.of(askHuman((String) call.getArguments().get("question"))) // may block — runs on the run's virtual thread
+            : Optional.empty())
+    // ...
+    .build());
+```
+
+A present result is fed back to the model as that call's tool result and the run carries on; `Optional.empty()` ends the run via `onError` with an `UnregisteredToolException`. The default (`UnregisteredToolHandler.NONE`) resolves nothing.
 
 ### Reading the result: `AgentLoopResult`
 
@@ -193,7 +205,7 @@ AgentLoop loop = AgentLoop.builder().memory(memory).build();
 
 Everything that stops a run short of a normal completion goes to `onError`, not thrown from `run(...)` (which itself only validates its input synchronously before dispatching the run):
 
-- `UnregisteredToolException` — the model called a tool that isn't registered.
+- `UnregisteredToolException` — the model called a tool that isn't registered, and `onUnregisteredTool` didn't resolve it.
 - `AgentLoopStepLimitExceededException` — the run exceeded `AgentProfile.maxSteps()`.
 - Anything `llm-router` itself throws (e.g. `RouterExhaustedException` if every candidate provider/model fails).
 

@@ -1,5 +1,6 @@
 package io.github.manishpateluk.llmagentloop;
 
+import io.github.manishpateluk.llmagentloop.tool.UnregisteredToolHandler;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -54,6 +55,13 @@ class LoopRequestTest {
 
         assertThat(request.onMessage()).isNotNull();
         request.onMessage().accept(AgentMessage.of(UUID.randomUUID(), 0, MessageType.INFO, "should not throw"));
+    }
+
+    @Test
+    void onUnregisteredToolDefaultsToDecliningEveryCall() {
+        LoopRequest request = LoopRequest.builder().prompt("hi").onResult(onResult).onError(onError).build();
+
+        assertThat(request.onUnregisteredTool()).isSameAs(UnregisteredToolHandler.NONE);
     }
 
     @Test

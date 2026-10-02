@@ -77,10 +77,12 @@ import java.util.function.Consumer;
  * each compression is reported on this run's {@code onMessage} and recorded in its
  * {@code Execution} as a {@code HISTORY_COMPRESSION} step, via {@code HistoryCompressor.withListener}.
  *
- * <p>Known simplifications in this pass, called out rather than silently glossed over: branches
- * (sub-tasks, and a {@code Plan}'s parallel-grouped steps) execute sequentially, not concurrently;
- * and an unregistered tool call ends the run via {@link LoopRequest#onError()} rather than being
- * handed back to the caller to resolve.
+ * <p>A tool call the model makes that isn't registered is handed to
+ * {@link LoopRequest#onUnregisteredTool()}; if that doesn't resolve it, the run ends via
+ * {@link LoopRequest#onError()} with an {@link UnregisteredToolException}.
+ *
+ * <p>Known simplification in this pass, called out rather than silently glossed over: branches
+ * (sub-tasks, and a {@code Plan}'s parallel-grouped steps) execute sequentially, not concurrently.
  */
 public final class AgentLoop {
 
@@ -455,13 +457,7 @@ public final class AgentLoop {
                 if (!response.getToolCalls().isEmpty()) {
                     history.add(Message.assistant(response.getContent(), response.getToolCalls()));
                     for (ToolCall call : response.getToolCalls()) {
-                        Optional<RegisteredTool> registered = tools.find(call.getName());
-                        if (registered.isEmpty()) {
-                            throw new UnregisteredToolException(call.getName());
-                        }
-
-                        emit(thread, MessageType.TOOL_CALL, "Calling tool: " + call.getName());
-                        String result = registered.get().handler().handle(call.getArguments());
+                        String result = runTool(thread, call);
                         emit(thread, MessageType.TOOL_RESULT, "Tool " + call.getName() + " returned a result.");
                         recordStep(thread, StepAction.TOOL_CALL, goal, call.getName(), result, null, response);
                         history.add(Message.tool(call.getId(), result));
@@ -474,6 +470,22 @@ public final class AgentLoop {
                 recordStep(thread, StepAction.COMPLETE, goal, null, null, response.getContent(), response);
                 return new StepOutcome(response.getContent(), response);
             }
+        }
+
+        /** A registered tool's handler, else the caller's {@link LoopRequest#onUnregisteredTool()}. */
+        private String runTool(int thread, ToolCall call) {
+            Optional<RegisteredTool> registered = tools.find(call.getName());
+            if (registered.isPresent()) {
+                emit(thread, MessageType.TOOL_CALL, "Calling tool: " + call.getName());
+                return registered.get().handler().handle(call.getArguments());
+            }
+
+            emit(thread, MessageType.TOOL_CALL, "Handing unregistered tool to the caller: " + call.getName());
+            Optional<String> resolved = request.onUnregisteredTool().handle(call);
+            if (resolved == null || resolved.isEmpty()) {
+                throw new UnregisteredToolException(call.getName());
+            }
+            return resolved.get();
         }
 
         /** Every LLM call the run makes goes through here, so each one counts toward {@code maxSteps} and the budgets. */

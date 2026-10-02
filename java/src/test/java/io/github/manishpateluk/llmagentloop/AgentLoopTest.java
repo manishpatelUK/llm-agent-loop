@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -212,6 +213,62 @@ class AgentLoopTest {
         Capture capture = run(loop, LoopRequest.builder()
                 .prompt("Do something")
                 .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build()));
+
+        assertThat(capture.result()).isNull();
+        assertThat(capture.error()).isInstanceOf(UnregisteredToolException.class);
+    }
+
+    @Test
+    void unregisteredToolCallResolvedByTheCallerFeedsBackIntoTheLoop() throws InterruptedException {
+        registerModel();
+        List<Request> requests = new CopyOnWriteArrayList<>();
+        List<ToolCall> handedOver = new CopyOnWriteArrayList<>();
+        AgentLoop loop = newLoop(request -> {
+            requests.add(request);
+            return requests.size() == 1
+                    ? Response.builder()
+                            .content("")
+                            .toolCalls(List.of(ToolCall.builder()
+                                    .id("u1").name("ask_human").arguments(Map.of("question", "ok?")).build()))
+                            .build()
+                    : reportComplete("done");
+        });
+
+        Capture capture = run(loop, LoopRequest.builder()
+                .prompt("Check with a human")
+                .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build())
+                .onUnregisteredTool(call -> {
+                    handedOver.add(call);
+                    return Optional.of("human says yes");
+                }));
+
+        assertThat(capture.error()).isNull();
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("done");
+        assertThat(handedOver).singleElement().satisfies(call -> {
+            assertThat(call.getName()).isEqualTo("ask_human");
+            assertThat(call.getArguments()).containsEntry("question", "ok?");
+        });
+        assertThat(capture.result().execution().steps())
+                .anyMatch(s -> "ask_human".equals(s.toolName()) && "human says yes".equals(s.toolResult()));
+
+        Message toolResult = requests.get(1).getHistory().stream()
+                .filter(m -> m.getRole() == Role.TOOL).findFirst().orElseThrow();
+        assertThat(toolResult.getToolCallId()).isEqualTo("u1");
+        assertThat(toolResult.getContent()).isEqualTo("human says yes");
+    }
+
+    @Test
+    void unregisteredToolCallTheCallerDeclinesStillEndsTheRunWithAnError() throws InterruptedException {
+        registerModel();
+        AgentLoop loop = newLoop(request -> Response.builder()
+                .content("")
+                .toolCalls(List.of(ToolCall.builder().id("1").name("not_registered").arguments(Map.of()).build()))
+                .build());
+
+        Capture capture = run(loop, LoopRequest.builder()
+                .prompt("Do something")
+                .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build())
+                .onUnregisteredTool(call -> Optional.empty()));
 
         assertThat(capture.result()).isNull();
         assertThat(capture.error()).isInstanceOf(UnregisteredToolException.class);

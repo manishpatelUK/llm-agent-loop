@@ -10,9 +10,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Tools an {@link io.github.manishpateluk.llmagentloop.AgentLoop} may call while executing a
- * step. Any tool the model requests that isn't registered here ends the run with an
- * {@code UnregisteredToolException} — handing it back to the caller for resolution instead is a
- * follow-up.
+ * step. Any tool the model requests that isn't registered here is handed to the run's
+ * {@link UnregisteredToolHandler} to resolve; if it can't, the run ends with an
+ * {@code UnregisteredToolException}.
  */
 public final class ToolRegistry {
 

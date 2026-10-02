@@ -121,9 +121,12 @@ Implemented so far (Java):
   - When the router compresses history, each compression (or failure to fit) is reported on the
     run's `onMessage` and recorded in its `Execution` as a `HISTORY_COMPRESSION` step, attributed
     to the thread whose call triggered it — via `HistoryCompressor.withListener` (see below).
-  - Known simplifications, called out rather than silently glossed over: an unregistered tool call
-    ends the run via `onError` (`UnregisteredToolException`) rather than being handed back to the
-    caller to resolve.
+  - A tool call the model makes that isn't registered is handed back to the caller via
+    `LoopRequest.onUnregisteredTool` (an `UnregisteredToolHandler`), which runs on the run's
+    virtual thread and so may block while it resolves the call (e.g. asking a human). A returned
+    result is fed back as that call's tool result and the run continues; `Optional.empty()` — and
+    the default, `UnregisteredToolHandler.NONE` — ends the run via `onError`
+    (`UnregisteredToolException`).
 - **History compression** (`io.github.manishpateluk.llmagentloop.compression`) — `HistoryCompressor`
   is the single entry point (`HistoryCompressor.compress(...)`, with progressively-defaulted
   overloads). It compares the request's estimated token size (padded 5% for safety) against the

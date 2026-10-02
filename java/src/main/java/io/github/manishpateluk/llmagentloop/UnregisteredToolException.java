@@ -1,12 +1,9 @@
 package io.github.manishpateluk.llmagentloop;
 
 /**
- * Thrown when the model requests a tool that isn't registered on this {@link AgentLoop}.
- *
- * <p>Per the library's design, an unregistered tool call is meant to be handed back to the
- * caller to resolve rather than failing outright — that bidirectional handoff (letting the
- * caller supply a result and resume the run) is a follow-up piece of work in its own right. For
- * now, an unregistered tool call ends the run with this exception via {@link LoopRequest#onError()}.
+ * Ends a run (via {@link LoopRequest#onError()}) when the model requests a tool that isn't
+ * registered on the {@link AgentLoop} and {@link LoopRequest#onUnregisteredTool()} didn't resolve
+ * it either — which is always the case with the default handler.
  */
 public class UnregisteredToolException extends RuntimeException {
 

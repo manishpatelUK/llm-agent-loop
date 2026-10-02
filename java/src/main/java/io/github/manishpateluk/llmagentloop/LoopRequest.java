@@ -1,5 +1,6 @@
 package io.github.manishpateluk.llmagentloop;
 
+import io.github.manishpateluk.llmagentloop.tool.UnregisteredToolHandler;
 import lombok.Builder;
 
 import java.io.File;
@@ -30,6 +31,10 @@ import java.util.function.Consumer;
  * @param maxDuration     optional wall-clock bound on the whole run, checked the same way as
  *                        {@code maxCostUsdCents} — after each step, not mid-step. {@code null}
  *                        (the default) means unbounded.
+ * @param onUnregisteredTool optional; resolves tool calls the model makes that aren't registered
+ *                        on the {@link AgentLoop} — see {@link UnregisteredToolHandler}. Defaults to
+ *                        {@link UnregisteredToolHandler#NONE}, which ends the run with an
+ *                        {@link UnregisteredToolException}.
  */
 @Builder
 public record LoopRequest(
@@ -40,7 +45,8 @@ public record LoopRequest(
         Consumer<Throwable> onError,
         Consumer<AgentMessage> onMessage,
         Integer maxCostUsdCents,
-        Duration maxDuration) {
+        Duration maxDuration,
+        UnregisteredToolHandler onUnregisteredTool) {
 
     public LoopRequest {
         Objects.requireNonNull(prompt, "prompt");
@@ -48,6 +54,7 @@ public record LoopRequest(
         Objects.requireNonNull(onError, "onError");
         files = files == null ? List.of() : List.copyOf(files);
         onMessage = onMessage == null ? message -> { } : onMessage;
+        onUnregisteredTool = onUnregisteredTool == null ? UnregisteredToolHandler.NONE : onUnregisteredTool;
         if (maxCostUsdCents != null && maxCostUsdCents <= 0) {
             throw new IllegalArgumentException("maxCostUsdCents must be positive when supplied, was " + maxCostUsdCents);
         }
