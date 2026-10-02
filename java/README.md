@@ -214,3 +214,11 @@ Cost and time bounds (`LoopRequest.maxCostUsdCents`/`maxDuration`) are the excep
 ## Learn more
 
 This README only covers installing and calling the library. For the overall design — the full behavior spec is still taking shape — see the [project README](../README.md) at the repo root, which is kept up to date as each piece is implemented.
+
+## Developer notes: publishing to Maven Central
+
+1. Bump the version in `java/pom.xml` to the new release, e.g. `1.0.1`
+2. From `java/`: `mvn clean deploy -Prelease`
+3. It'll prompt for your GPG passphrase, sign everything, and upload the bundle to Central
+4. Go to the Central Portal → Deployments, find it, review the contents, and click Publish — it stays private until you do this
+5. It typically takes 15–30 minutes to sync out to Maven Central and search.maven.org after you publish

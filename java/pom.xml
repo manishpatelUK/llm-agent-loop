@@ -11,7 +11,31 @@
   <packaging>jar</packaging>
 
   <name>LLM Agent Loop</name>
-  <description>Java implementation of the LLM Agent Loop project.</description>
+  <description>A Java library providing the recursive agent loop that turns a single request into a completed task: planning, tool calls, sub-tasks, history compression, and cost/time bounds, on top of llm-router.</description>
+  <url>https://github.com/manishpatelUK/llm-agent-loop</url>
+
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://github.com/manishpatelUK/llm-agent-loop/blob/main/LICENSE</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <id>manishpatelUK</id>
+      <name>Manish Patel</name>
+      <url>https://github.com/manishpatelUK</url>
+    </developer>
+  </developers>
+
+  <scm>
+    <connection>scm:git:https://github.com/manishpatelUK/llm-agent-loop.git</connection>
+    <developerConnection>scm:git:https://github.com/manishpatelUK/llm-agent-loop.git</developerConnection>
+    <url>https://github.com/manishpatelUK/llm-agent-loop</url>
+    <tag>HEAD</tag>
+  </scm>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -87,4 +111,87 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <profile>
+      <!-- Everything needed to publish to Maven Central, kept out of the default build so
+           `mvn test`/`mvn package` stay fast and don't require a GPG key on every machine.
+           Activate with `mvn clean deploy -Prelease` — see java/pom.xml's neighboring README
+           for the one-time account/namespace/GPG setup this depends on. -->
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <version>3.3.1</version>
+            <executions>
+              <execution>
+                <id>attach-sources</id>
+                <goals>
+                  <goal>jar-no-fork</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <!-- doclint=none: the standard doclet otherwise hard-fails the build on things like
+                 missing @param/@return tags, which this project doesn't maintain exhaustively
+                 (especially on Lombok-generated accessors, which javadoc can't see or document
+                 anyway since it parses source directly, before Lombok's annotation processing
+                 runs). A broken {@link} reference would still be an error; keep {@link} pointed
+                 only at hand-written methods/types, never at a Lombok-generated one (builder(),
+                 toBuilder(), getters, etc.) — use {@code Foo.builder()} for those instead. -->
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <version>3.11.2</version>
+            <configuration>
+              <doclint>none</doclint>
+            </configuration>
+            <executions>
+              <execution>
+                <id>attach-javadocs</id>
+                <goals>
+                  <goal>jar</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <!-- Central requires every published artifact to be PGP-signed. Relies on gpg-agent
+                 (or an equivalent pinentry setup) to prompt for the passphrase interactively;
+                 never put a signing passphrase in this file or in settings.xml in plaintext. -->
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.7</version>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>sign</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <!-- Uploads the signed bundle to the Central Publishing Portal. publishingServerId
+                 must match a <server> entry in ~/.m2/settings.xml holding your Central user
+                 token (Account -> Generate User Token on central.sonatype.com) — never commit
+                 that token to this repo. autoPublish is deliberately left at its default
+                 (false): the deployment lands in the Portal for you to review and publish
+                 manually the first few times; flip it to true here once you're comfortable
+                 fully automating releases. -->
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.11.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
