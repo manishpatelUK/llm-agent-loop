@@ -403,7 +403,7 @@ The client speaks [MCP](https://modelcontextprotocol.io) over stdio or Streamabl
 
 ## Extending the library: your own memory, workspace and tools
 
-Everything an agent touches outside the model is pluggable: where it remembers things (`MemoryStore`), where it keeps files (`Workspace`), and what it can do (tools). This section is the contract for writing your own.
+Everything an agent touches outside the model is pluggable: where it remembers things (`MemoryStore`), where it keeps files (`Workspace`), and what it can do (tools). This section is the contract for writing your own, with examples for Postgres (including Cloud SQL and AlloyDB), S3 and Google Cloud Storage.
 
 ### Rules that apply to everything below
 
@@ -478,7 +478,7 @@ public final class PostgresMemoryStore implements MemoryStore {
 AgentLoop loop = AgentLoop.builder().memory(new PostgresMemoryStore(dataSource)) /* ... */ .build();
 ```
 
-For semantic recall, swap the full-text query for an embedding search (pgvector, Pinecone, etc.) and keep the same filter on `scope_key`. The loop calls `search` with each step's goal to recall context automatically, and the model calls it via `memory_search`; both go through this one method.
+On Google Cloud, this example runs unchanged on Cloud SQL for PostgreSQL or AlloyDB. For semantic recall, swap the full-text query for an embedding search (pgvector, AlloyDB AI, Pinecone, etc.) and keep the same filter on `scope_key`. The loop calls `search` with each step's goal to recall context automatically, and the model calls it via `memory_search`; both go through this one method.
 
 ### A custom `Workspace`
 
@@ -543,6 +543,75 @@ public final class S3Workspace implements Workspace {
     }
 }
 ```
+
+The same over Google Cloud Storage, using the `google-cloud-storage` client:
+
+```java
+import com.google.cloud.storage.Blob;
+import com.google.cloud.storage.BlobId;
+import com.google.cloud.storage.BlobInfo;
+import com.google.cloud.storage.Storage;
+import com.google.cloud.storage.StorageOptions;
+import io.github.manishpateluk.llmagentloop.Scope;
+import io.github.manishpateluk.llmagentloop.workspace.Workspace;
+import io.github.manishpateluk.llmagentloop.workspace.WorkspaceFile;
+import io.github.manishpateluk.llmagentloop.workspace.WorkspaceFileInfo;
+
+public final class GcsWorkspace implements Workspace {
+
+    private final Storage storage;
+    private final String bucket;
+
+    public GcsWorkspace(String bucket) {
+        this(StorageOptions.getDefaultInstance().getService(), bucket);  // Application Default Credentials
+    }
+
+    public GcsWorkspace(Storage storage, String bucket) {
+        this.storage = storage;
+        this.bucket = bucket;
+    }
+
+    private static String prefix(Scope scope) {
+        return "workspaces/" + scope.key() + "/";
+    }
+
+    @Override
+    public Optional<WorkspaceFile> read(Scope scope, String path) {
+        Blob blob = storage.get(BlobId.of(bucket, prefix(scope) + path));
+        if (blob == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new WorkspaceFile(path, blob.getContentType(), blob.getContent(),
+                blob.getUpdateTimeOffsetDateTime().toInstant()));
+    }
+
+    @Override
+    public void write(Scope scope, WorkspaceFile file) {
+        BlobInfo info = BlobInfo.newBuilder(BlobId.of(bucket, prefix(scope) + file.path()))
+                .setContentType(file.mediaType())
+                .build();
+        storage.create(info, file.content());
+    }
+
+    @Override
+    public boolean delete(Scope scope, String path) {
+        return storage.delete(BlobId.of(bucket, prefix(scope) + path));  // false if it didn't exist
+    }
+
+    @Override
+    public List<WorkspaceFileInfo> list(Scope scope) {
+        String prefix = prefix(scope);
+        List<WorkspaceFileInfo> files = new ArrayList<>();
+        for (Blob blob : storage.list(bucket, Storage.BlobListOption.prefix(prefix)).iterateAll()) {
+            files.add(new WorkspaceFileInfo(blob.getName().substring(prefix.length()), blob.getContentType(),
+                    blob.getSize(), blob.getUpdateTimeOffsetDateTime().toInstant()));
+        }
+        return files;
+    }
+}
+```
+
+On GKE or Cloud Run, Application Default Credentials come from the workload's service account. Give that account `roles/storage.objectUser` on the bucket only, not project-wide storage access.
 
 `list` is called on every write to check the limits, so keep it cheap. For very large workspaces, a database index of file metadata beside the blob store works better than listing a bucket.
 
