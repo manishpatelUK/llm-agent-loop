@@ -1,5 +1,6 @@
 package io.github.manishpateluk.llmagentloop;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Builder;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.json.JsonMapper;
@@ -19,6 +20,9 @@ import java.util.List;
  * @param maxSteps         hard cap on total steps taken across a run, all threads combined.
  *                         Any value &le; 0 falls back to {@link #DEFAULT_MAX_STEPS} — there is
  *                         deliberately no way to request "unbounded".
+ * @param instructions     free-form Markdown describing how the agent behaves — typically an
+ *                         {@code Agent}'s definition plus its skills' guidance. Placed verbatim at
+ *                         the top of the system instructions, ahead of the structured profile.
  */
 @Builder
 public record AgentProfile(
@@ -26,7 +30,8 @@ public record AgentProfile(
         List<String> planningGuidance,
         List<String> goals,
         String operatingContext,
-        int maxSteps) {
+        int maxSteps,
+        @JsonIgnore String instructions) {
 
     /** Used when a run's {@link LoopRequest#agentProfile()} is {@code null}. */
     public static final AgentProfile DEFAULT = AgentProfile.builder().build();
@@ -43,12 +48,14 @@ public record AgentProfile(
         maxSteps = maxSteps <= 0 ? DEFAULT_MAX_STEPS : maxSteps;
     }
 
-    /** Renders this profile as a JSON fragment to fold into system instructions. */
+    /** Renders this profile for the system instructions: {@link #instructions()} verbatim, then the rest as JSON. */
     public String toSystemInstructionsFragment() {
+        String profile;
         try {
-            return "Agent operating profile: " + JSON.writeValueAsString(this);
+            profile = "Agent operating profile: " + JSON.writeValueAsString(this);
         } catch (JacksonException e) {
             throw new IllegalStateException("Failed to serialize AgentProfile to JSON", e);
         }
+        return instructions == null || instructions.isBlank() ? profile : instructions.strip() + "\n\n" + profile;
     }
 }

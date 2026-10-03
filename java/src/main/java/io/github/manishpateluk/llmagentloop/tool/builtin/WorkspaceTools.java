@@ -2,6 +2,8 @@ package io.github.manishpateluk.llmagentloop.tool.builtin;
 
 import com.manishpateluk.llmrouter.model.ToolDefinition;
 import io.github.manishpateluk.llmagentloop.tool.RegisteredTool;
+import io.github.manishpateluk.llmagentloop.tool.ToolSchemas;
+import io.github.manishpateluk.llmagentloop.tool.ToolArguments;
 import io.github.manishpateluk.llmagentloop.tool.ToolContext;
 import io.github.manishpateluk.llmagentloop.tool.ToolHandler;
 import io.github.manishpateluk.llmagentloop.tool.ToolInputException;
@@ -55,10 +57,10 @@ public final class WorkspaceTools {
     public static RegisteredTool list() {
         return tool(LIST,
                 "List files in the workspace — this user's persistent file area for drafts, reports and other documents.",
-                Schemas.object(List.of(),
-                        "prefix", Schemas.string("Only list paths starting with this, e.g. \"reports/\". Omit for all files.")),
+                ToolSchemas.object(List.of(),
+                        "prefix", ToolSchemas.string("Only list paths starting with this, e.g. \"reports/\". Omit for all files.")),
                 (args, context) -> {
-                    List<WorkspaceFileInfo> files = context.workspace().list(ToolArgs.optionalString(args, "prefix"));
+                    List<WorkspaceFileInfo> files = context.workspace().list(ToolArguments.optionalString(args, "prefix"));
                     if (files.isEmpty()) {
                         return "No files.";
                     }
@@ -78,20 +80,20 @@ public final class WorkspaceTools {
     public static RegisteredTool read() {
         return tool(READ,
                 "Read a text file from the workspace. Long files come back in pieces: use offset to continue.",
-                Schemas.object(List.of("path"),
-                        "path", Schemas.string("File path, e.g. \"notes/plan.md\"."),
-                        "offset", Schemas.integer("Character to start from. Defaults to 0."),
-                        "max_chars", Schemas.integer("Maximum characters to return, up to " + MAX_READ_CHARS
+                ToolSchemas.object(List.of("path"),
+                        "path", ToolSchemas.string("File path, e.g. \"notes/plan.md\"."),
+                        "offset", ToolSchemas.integer("Character to start from. Defaults to 0."),
+                        "max_chars", ToolSchemas.integer("Maximum characters to return, up to " + MAX_READ_CHARS
                                 + ". Defaults to " + DEFAULT_READ_CHARS + ".")),
                 (args, context) -> {
-                    WorkspaceFile file = context.workspace().require(ToolArgs.requireString(args, "path"));
+                    WorkspaceFile file = context.workspace().require(ToolArguments.requireString(args, "path"));
                     if (!file.isText()) {
                         return file.path() + " is a binary file (" + file.mediaType() + ", " + file.size()
                                 + " bytes) and can't be shown as text.";
                     }
                     String text = file.text();
-                    int offset = ToolArgs.optionalInt(args, "offset", 0, 0, Integer.MAX_VALUE);
-                    int maxChars = ToolArgs.optionalInt(args, "max_chars", DEFAULT_READ_CHARS, 1, MAX_READ_CHARS);
+                    int offset = ToolArguments.optionalInt(args, "offset", 0, 0, Integer.MAX_VALUE);
+                    int maxChars = ToolArguments.optionalInt(args, "max_chars", DEFAULT_READ_CHARS, 1, MAX_READ_CHARS);
                     if (offset > text.length()) {
                         throw new ToolInputException("offset " + offset + " is past the end of " + file.path()
                                 + " (" + text.length() + " characters)");
@@ -109,12 +111,12 @@ public final class WorkspaceTools {
         return tool(WRITE,
                 "Create a text file in the workspace, or replace it entirely if it exists. To change part of an "
                         + "existing file, use " + EDIT + " instead.",
-                Schemas.object(List.of("path", "content"),
-                        "path", Schemas.string("File path, e.g. \"drafts/launch-email.md\". Folders are created as needed."),
-                        "content", Schemas.string("The complete file content.")),
+                ToolSchemas.object(List.of("path", "content"),
+                        "path", ToolSchemas.string("File path, e.g. \"drafts/launch-email.md\". Folders are created as needed."),
+                        "content", ToolSchemas.string("The complete file content.")),
                 (args, context) -> {
                     WorkspaceFile file = context.workspace().writeText(
-                            ToolArgs.requireString(args, "path"), ToolArgs.requireStringAllowEmpty(args, "content"));
+                            ToolArguments.requireString(args, "path"), ToolArguments.requireStringAllowEmpty(args, "content"));
                     return "Wrote " + file.size() + " bytes to " + file.path() + ".";
                 });
     }
@@ -123,19 +125,19 @@ public final class WorkspaceTools {
         return tool(EDIT,
                 "Replace exact text in a workspace text file. old_text must match the file exactly, including "
                         + "whitespace, and be unique unless replace_all is true.",
-                Schemas.object(List.of("path", "old_text", "new_text"),
-                        "path", Schemas.string("File path."),
-                        "old_text", Schemas.string("The exact text to replace. Include enough surrounding text to make it unique."),
-                        "new_text", Schemas.string("The replacement text."),
-                        "replace_all", Schemas.bool("Replace every occurrence instead of requiring exactly one. Defaults to false.")),
+                ToolSchemas.object(List.of("path", "old_text", "new_text"),
+                        "path", ToolSchemas.string("File path."),
+                        "old_text", ToolSchemas.string("The exact text to replace. Include enough surrounding text to make it unique."),
+                        "new_text", ToolSchemas.string("The replacement text."),
+                        "replace_all", ToolSchemas.bool("Replace every occurrence instead of requiring exactly one. Defaults to false.")),
                 (args, context) -> {
-                    WorkspaceFile file = context.workspace().require(ToolArgs.requireString(args, "path"));
+                    WorkspaceFile file = context.workspace().require(ToolArguments.requireString(args, "path"));
                     if (!file.isText()) {
                         throw new ToolInputException(file.path() + " is a binary file and can't be edited as text");
                     }
-                    String oldText = ToolArgs.requireStringAllowEmpty(args, "old_text");
-                    String newText = ToolArgs.requireStringAllowEmpty(args, "new_text");
-                    boolean replaceAll = ToolArgs.optionalBoolean(args, "replace_all", false);
+                    String oldText = ToolArguments.requireStringAllowEmpty(args, "old_text");
+                    String newText = ToolArguments.requireStringAllowEmpty(args, "new_text");
+                    boolean replaceAll = ToolArguments.optionalBoolean(args, "replace_all", false);
                     if (oldText.isEmpty()) {
                         throw new ToolInputException("old_text must not be empty");
                     }
@@ -159,10 +161,10 @@ public final class WorkspaceTools {
     public static RegisteredTool delete() {
         return tool(DELETE,
                 "Delete a file from the workspace.",
-                Schemas.object(List.of("path"),
-                        "path", Schemas.string("File path.")),
+                ToolSchemas.object(List.of("path"),
+                        "path", ToolSchemas.string("File path.")),
                 (args, context) -> {
-                    String path = ToolArgs.requireString(args, "path");
+                    String path = ToolArguments.requireString(args, "path");
                     if (!context.workspace().delete(path)) {
                         throw new WorkspaceException("No such file: " + path);
                     }
@@ -174,14 +176,14 @@ public final class WorkspaceTools {
         return tool(SEARCH,
                 "Find lines containing some text across the workspace's text files (case-insensitive). "
                         + "Returns path:line: text for each match.",
-                Schemas.object(List.of("query"),
-                        "query", Schemas.string("Text to look for."),
-                        "prefix", Schemas.string("Only search paths starting with this. Omit for all files.")),
+                ToolSchemas.object(List.of("query"),
+                        "query", ToolSchemas.string("Text to look for."),
+                        "prefix", ToolSchemas.string("Only search paths starting with this. Omit for all files.")),
                 (args, context) -> {
-                    String needle = ToolArgs.requireString(args, "query").toLowerCase(Locale.ROOT);
+                    String needle = ToolArguments.requireString(args, "query").toLowerCase(Locale.ROOT);
                     List<String> matches = new ArrayList<>();
                     boolean truncated = false;
-                    for (WorkspaceFileInfo info : context.workspace().list(ToolArgs.optionalString(args, "prefix"))) {
+                    for (WorkspaceFileInfo info : context.workspace().list(ToolArguments.optionalString(args, "prefix"))) {
                         WorkspaceFile file = context.workspace().read(info.path()).orElse(null);
                         if (file == null || !file.isText()) {
                             continue;

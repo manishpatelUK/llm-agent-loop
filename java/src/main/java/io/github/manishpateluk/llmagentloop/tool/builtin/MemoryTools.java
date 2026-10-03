@@ -3,6 +3,8 @@ package io.github.manishpateluk.llmagentloop.tool.builtin;
 import com.manishpateluk.llmrouter.model.ToolDefinition;
 import io.github.manishpateluk.llmagentloop.memory.MemoryEntry;
 import io.github.manishpateluk.llmagentloop.tool.RegisteredTool;
+import io.github.manishpateluk.llmagentloop.tool.ToolSchemas;
+import io.github.manishpateluk.llmagentloop.tool.ToolArguments;
 import io.github.manishpateluk.llmagentloop.tool.ToolInputException;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -39,13 +41,13 @@ public final class MemoryTools {
                         .description("Save a fact to long-term memory so it's available in future conversations with "
                                 + "this user — preferences, decisions, key details about their business. Write it as "
                                 + "a self-contained statement that will make sense on its own later.")
-                        .parameters(Schemas.object(List.of("content"),
-                                "content", Schemas.string("The fact to remember, as a self-contained statement."),
-                                "tags", Schemas.stringArray("Optional short labels to help find it later, e.g. [\"pricing\", \"q3\"].")))
+                        .parameters(ToolSchemas.object(List.of("content"),
+                                "content", ToolSchemas.string("The fact to remember, as a self-contained statement."),
+                                "tags", ToolSchemas.stringArray("Optional short labels to help find it later, e.g. [\"pricing\", \"q3\"].")))
                         .build(),
                 (args, context) -> {
-                    String content = ToolArgs.requireString(args, "content");
-                    MemoryEntry entry = context.memory().save(content, ToolArgs.optionalStringList(args, "tags"));
+                    String content = ToolArguments.requireString(args, "content");
+                    MemoryEntry entry = context.memory().save(content, ToolArguments.optionalStringList(args, "tags"));
                     return "Saved to memory with id " + entry.id() + ".";
                 });
     }
@@ -56,13 +58,13 @@ public final class MemoryTools {
                         .name(SEARCH)
                         .description("Search long-term memory for facts saved in earlier conversations with this user. "
                                 + "Leave the query empty to list the most recent memories.")
-                        .parameters(Schemas.object(List.of(),
-                                "query", Schemas.string("What to look for, in keywords."),
-                                "limit", Schemas.integer("Maximum results, 1-20. Defaults to 5.")))
+                        .parameters(ToolSchemas.object(List.of(),
+                                "query", ToolSchemas.string("What to look for, in keywords."),
+                                "limit", ToolSchemas.integer("Maximum results, 1-20. Defaults to 5.")))
                         .build(),
                 (args, context) -> {
-                    String query = ToolArgs.optionalString(args, "query");
-                    int limit = ToolArgs.optionalInt(args, "limit", 5, 1, 20);
+                    String query = ToolArguments.optionalString(args, "query");
+                    int limit = ToolArguments.optionalInt(args, "limit", 5, 1, 20);
                     List<MemoryEntry> found = context.memory().search(query == null ? "" : query, limit);
                     if (found.isEmpty()) {
                         return "No matching memories.";
@@ -76,11 +78,11 @@ public final class MemoryTools {
                 ToolDefinition.builder()
                         .name(FORGET)
                         .description("Delete a memory that is wrong or no longer true, by the id memory_search returned.")
-                        .parameters(Schemas.object(List.of("id"),
-                                "id", Schemas.string("The memory's id.")))
+                        .parameters(ToolSchemas.object(List.of("id"),
+                                "id", ToolSchemas.string("The memory's id.")))
                         .build(),
                 (args, context) -> {
-                    String id = ToolArgs.requireString(args, "id");
+                    String id = ToolArguments.requireString(args, "id");
                     if (!context.memory().delete(id)) {
                         throw new ToolInputException("No memory with id " + id);
                     }

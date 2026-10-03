@@ -1,0 +1,79 @@
+package io.github.manishpateluk.llmagentloop.tool.builtin;
+
+import com.manishpateluk.llmrouter.model.ToolDefinition;
+import io.github.manishpateluk.llmagentloop.MessageType;
+import io.github.manishpateluk.llmagentloop.tool.RegisteredTool;
+import io.github.manishpateluk.llmagentloop.tool.ToolSchemas;
+import io.github.manishpateluk.llmagentloop.tool.ToolArguments;
+import io.github.manishpateluk.llmagentloop.tool.ToolInputException;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
+
+/**
+ * {@code delegate_to_agent}: hands a self-contained task to another agent and returns its answer.
+ * Unlike the loop's own {@code spawn_sub_task} (the same agent splitting its work), this reaches a
+ * <em>different</em> agent with its own instructions and tools.
+ *
+ * <p>Delegation runs synchronously on the delegating run's thread. Chains are capped at
+ * {@link #MAX_DEPTH} levels, so two agents that delegate to each other can't recurse forever.
+ */
+public final class DelegationTools {
+
+    public static final String DELEGATE = "delegate_to_agent";
+    public static final int MAX_DEPTH = 3;
+
+    private static final Pattern NAME = Pattern.compile("^[a-zA-Z0-9_-]{1,64}$");
+
+    /** How deep in a delegation chain the current thread is; delegated runs execute on the delegating thread. */
+    private static final ScopedValue<Integer> DEPTH = ScopedValue.newInstance();
+
+    private DelegationTools() {
+    }
+
+    public static RegisteredTool delegateToAgent(List<AgentDelegate> delegates) {
+        if (delegates == null || delegates.isEmpty()) {
+            throw new IllegalArgumentException("At least one delegate is required");
+        }
+        Map<String, AgentDelegate> byName = new LinkedHashMap<>();
+        for (AgentDelegate delegate : delegates) {
+            if (!NAME.matcher(delegate.name()).matches()) {
+                throw new IllegalArgumentException("Delegate name must match " + NAME + ": " + delegate.name());
+            }
+            if (byName.put(delegate.name(), delegate) != null) {
+                throw new IllegalArgumentException("Duplicate delegate name: " + delegate.name());
+            }
+        }
+
+        StringBuilder roster = new StringBuilder();
+        byName.values().forEach(d -> roster.append("\n- ").append(d.name()).append(": ").append(d.description()));
+
+        return new RegisteredTool(
+                ToolDefinition.builder()
+                        .name(DELEGATE)
+                        .description("Hand a self-contained task to a specialist agent and get its result back. "
+                                + "Give it everything it needs in the task — it doesn't see this conversation. "
+                                + "Available agents:" + roster)
+                        .parameters(ToolSchemas.object(List.of("agent", "task"),
+                                "agent", ToolSchemas.stringEnum("Which agent to delegate to.", List.copyOf(byName.keySet())),
+                                "task", ToolSchemas.string("The complete task, including any context and what to return.")))
+                        .build(),
+                (args, context) -> {
+                    String name = ToolArguments.requireString(args, "agent");
+                    AgentDelegate delegate = byName.get(name);
+                    if (delegate == null) {
+                        throw new ToolInputException("No agent called '" + name + "'; available: " + byName.keySet());
+                    }
+                    int depth = DEPTH.orElse(0) + 1;
+                    if (depth > MAX_DEPTH) {
+                        throw new ToolInputException("Delegation is already " + MAX_DEPTH
+                                + " levels deep; finish this task yourself instead of delegating further");
+                    }
+                    String task = ToolArguments.requireString(args, "task");
+                    context.report(MessageType.PROGRESS, "Delegating to " + name + ": " + task);
+                    return ScopedValue.where(DEPTH, depth).call(() -> delegate.run(task, context));
+                });
+    }
+}

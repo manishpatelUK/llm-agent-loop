@@ -143,6 +143,20 @@ public final class AgentLoop {
         this.workspaceLimits = Objects.requireNonNull(workspaceLimits, "workspaceLimits");
     }
 
+    /**
+     * A loop sharing this one's router, memory, workspace and their settings, but offering
+     * {@code tools} instead — how one process runs many agents with different tool sets over the
+     * same infrastructure (see {@code AgentRuntime}).
+     */
+    public AgentLoop withTools(ToolRegistry tools) {
+        return new AgentLoop(router, tools, memory, memoryLevel, workspace, workspaceLevel, workspaceLimits);
+    }
+
+    /** The tools this loop offers. */
+    public ToolRegistry tools() {
+        return tools;
+    }
+
     /** See {@link Builder}. */
     public static Builder builder() {
         return new Builder();
@@ -303,6 +317,33 @@ public final class AgentLoop {
     public void run(LoopRequest request) {
         Objects.requireNonNull(request, "request");
         EXECUTOR.submit(() -> new Run(request).execute());
+    }
+
+    /**
+     * Runs to completion on the <em>calling</em> thread and returns the result — for callers that
+     * are already on a thread they're happy to block (a virtual thread, a tool handler delegating to
+     * another agent, a test). The builder's own {@code onResult}/{@code onError} are replaced;
+     * {@code onMessage} and everything else is used as given.
+     *
+     * @throws RuntimeException whatever would have gone to {@code onError}; a checked exception is
+     *                          wrapped in an {@link IllegalStateException}
+     */
+    public AgentLoopResult runAndWait(LoopRequest.LoopRequestBuilder builder) {
+        Objects.requireNonNull(builder, "builder");
+        AtomicReference<AgentLoopResult> result = new AtomicReference<>();
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        new Run(builder.onResult(result::set).onError(error::set).build()).execute();
+        Throwable failure = error.get();
+        if (failure instanceof RuntimeException runtime) {
+            throw runtime;
+        }
+        if (failure instanceof Error fatal) {
+            throw fatal;
+        }
+        if (failure != null) {
+            throw new IllegalStateException(failure);
+        }
+        return result.get();
     }
 
     /**
@@ -545,7 +586,8 @@ public final class AgentLoop {
             Optional<RegisteredTool> registered = tools.find(call.getName());
             if (registered.isPresent()) {
                 emit(thread, MessageType.TOOL_CALL, "Calling tool: " + call.getName());
-                ToolContext context = new ToolContext(executionId, thread, scope, scopedMemory, scopedWorkspace);
+                ToolContext context = new ToolContext(executionId, thread, scope, scopedMemory, scopedWorkspace,
+                        (type, message) -> emit(thread, type, message));
                 try {
                     return registered.get().handler().handle(call.getArguments(), context);
                 } catch (ToolInputException e) {

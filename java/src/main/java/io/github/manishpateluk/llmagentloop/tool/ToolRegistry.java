@@ -48,6 +48,11 @@ public final class ToolRegistry {
         return Optional.ofNullable(tools.get(name));
     }
 
+    /** Every registered tool. */
+    public List<RegisteredTool> all() {
+        return List.copyOf(tools.values());
+    }
+
     public List<ToolDefinition> definitions() {
         return tools.values().stream().map(RegisteredTool::definition).toList();
     }

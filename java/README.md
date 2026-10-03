@@ -41,7 +41,63 @@ loop.run(
     error -> System.err.println("Failed: " + error.getMessage()));
 ```
 
-`run(...)` is always asynchronous — it returns immediately and reports back entirely through the callbacks you supply, on a virtual thread.
+`run(...)` is always asynchronous — it returns immediately and reports back entirely through the callbacks you supply, on a virtual thread. `loop.runAndWait(LoopRequest.builder()...)` runs on the calling thread instead and returns the `AgentLoopResult` (throwing whatever would have gone to `onError`).
+
+For anything beyond a single call, start with **Agents** below — that's the level most products want.
+
+## Logging
+
+The library and `llm-router` log through SLF4J; Apache POI's Log4j API logging is bridged to SLF4J too (`log4j-to-slf4j` is included). Add whichever SLF4J backend you use (Logback, `slf4j-simple`, ...) to see logs; without one, they're discarded.
+
+## Agents: define once, run for every user
+
+The highest-level way to use the library. You write an agent's behaviour as Markdown, give it **skills** (tools plus know-how) and tools of your own, and run it with an `AgentRuntime` for whichever user is talking to it. One agent definition serves every user. Each run's `Scope` decides whose memory and files it works with. Tracking which session a user is in stays with you.
+
+```markdown
+---
+name: cofounder
+description: A digital cofounder for early-stage startups
+plan_mode: auto          # auto | always_plan | never_plan | recursive_on_each_step
+max_steps: 40
+---
+You are the user's cofounder. You handle admin, finance and product work end to end:
+draft documents into the workspace, build spreadsheets with live formulas, and ask the
+user before committing them to anything that costs money or is legally binding.
+```
+
+```java
+import io.github.manishpateluk.llmagentloop.agent.Agent;
+import io.github.manishpateluk.llmagentloop.agent.AgentRuntime;
+import io.github.manishpateluk.llmagentloop.skill.Skills;
+
+// Once per process: the shared infrastructure.
+AgentRuntime runtime = new AgentRuntime(AgentLoop.builder()
+    .memory(myMemoryStore)        // see "Extending the library" for writing your own
+    .workspace(myWorkspace)
+    .build());
+
+// Once per agent: the definition.
+Agent legal = Agent.fromMarkdown(Files.readString(Path.of("agents/legal.md")));
+Agent cofounder = Agent.builder(Files.readString(Path.of("agents/cofounder.md")))
+    .skills(Skills.memory(), Skills.files(), Skills.spreadsheets(), Skills.dataAnalysis(),
+            Skills.web(new BraveSearch(braveKey)), Skills.askingTheUser(myHumanHandler))
+    .tool(myCrmTool)
+    .delegateTo(legal)            // adds delegate_to_agent; legal runs on the same runtime and scope
+    .build();
+
+// Per message: run it for this user.
+runtime.run(cofounder, userMessage, Scope.of(tenantId, userId, sessionId),
+    result -> reply(result.finalResponse().getContent(), result.changedFiles()),
+    error -> reportFailure(error));
+
+// Or block on the calling thread (a virtual thread, a test):
+AgentLoopResult result = runtime.runAndWait(cofounder, userMessage, scope);
+```
+
+- **The Markdown body becomes the agent's instructions, verbatim.** Front matter is optional apart from `name`, which must match `^[a-zA-Z0-9_-]{1,64}$` because other agents delegate by name. It can also be set with `Agent.builder(md).name(...)`. Unknown front matter keys are rejected, so a typo doesn't go unnoticed.
+- **Skills** bundle tools with guidance, which is added to the agent's instructions. The ready-made ones in `Skills` are `memory()`, `files()`, `spreadsheets()`, `dataAnalysis()`, `web(...)` and `askingTheUser(...)`. You can make your own with `new Skill(name, description, instructions, tools)`.
+- **Tools.** Each agent gets the runtime's base tools (those on the `AgentLoop` you pass in), plus its skills' tools, plus its own. Each agent's loop is built once and reused.
+- **`runtime.run(agent, LoopRequest.builder()...)`** gives full control of the request (files, `onMessage`, cost and time bounds). The agent's profile is always applied.
 
 ## Usage examples
 
@@ -251,6 +307,100 @@ Everything that stops a run short of a normal completion goes to `onError`, not 
 
 Cost and time bounds (`LoopRequest.maxCostUsdCents`/`maxDuration`) are the exception — those stop the run gracefully via `onResult`, not `onError`, as described above.
 
+## Built-in tools
+
+Every tool is a `RegisteredTool`: register it on a `ToolRegistry` (`register`/`registerAll`), or get it bundled through a skill. All of them:
+
+- follow the provider-safe naming and schema rules;
+- report fixable problems (bad arguments, a missing file, an HTTP 404) back to the model rather than ending the run;
+- stay within the run's `Scope`.
+
+| Tools | Package / factory | Needs |
+|---|---|---|
+| `memory_save`, `memory_search`, `memory_forget` | `tool.builtin.MemoryTools.all()` | a `MemoryStore` |
+| `workspace_list`, `_read`, `_write`, `_edit`, `_delete`, `_search` | `tool.builtin.WorkspaceTools.all()` | a `Workspace` |
+| `current_datetime`, `date_calculate` (business days too), `calculate` (exact decimal) | `tool.builtin.UtilityTools.all()` | — |
+| `data_query` (filter/group/aggregate CSV or JSON, save results) | `tool.builtin.DataTools.all()` | a `Workspace` |
+| `ask_human` | `tool.builtin.HumanTools.askHuman(handler)` | your handler that reaches the user |
+| `delegate_to_agent` | `tool.builtin.DelegationTools.delegateToAgent(delegates)` (or `Agent.builder().delegateTo(...)`) | other agents |
+| `web_fetch` | `tool.web.WebTools.fetch()` | — |
+| `web_search` | `tool.web.WebTools.search(provider)` | a `SearchProvider`: `BraveSearch` or `TavilySearch` built in |
+| `api_request` | `tool.api.ApiTools.request(connections)` | `ApiConnection`s you register |
+| `spreadsheet_create`, `_read`, `_update` (Excel, via Apache POI) | `tool.office.SpreadsheetTools.all()` | a `Workspace` |
+| any MCP server's tools | `tool.mcp.McpClient.stdio(...)` / `.http(...)` → `.tools()` | an MCP server |
+
+### Asking the user: `ask_human`
+
+```java
+registry.register(HumanTools.askHuman((question, context) ->
+    myChat.askAndAwaitReply(context.scope().sessionId(), question.text(), question.options(), Duration.ofMinutes(30))));
+```
+
+The handler blocks on the run's virtual thread until the user answers. Return `Optional.empty()` on timeout, and the agent carries on using its judgement.
+
+### Delegating to other agents: `delegate_to_agent`
+
+With `AgentRuntime`, use `Agent.builder(...).delegateTo(otherAgent)`. At a lower level, use `DelegationTools.delegateToAgent(List.of(AgentDelegate.of("legal", "Contract review", legalLoop, legalProfile)))`. Implement `AgentDelegate` to delegate to something else entirely, such as a remote agent service.
+
+- The delegated run uses the **same scope**: same user, memory and workspace.
+- Its status updates are forwarded, prefixed `[legal]`.
+- Its step and cost limits are its own.
+- Chains are capped at `DelegationTools.MAX_DEPTH` (3), so agents that delegate to each other can't recurse forever.
+
+### The web: `web_fetch` and `web_search`
+
+```java
+registry.register(WebTools.fetch())
+        .register(WebTools.search(new BraveSearch(scope -> keys.braveFor(scope.tenantId()))));  // or TavilySearch
+```
+
+`web_fetch` reads public pages as Markdown-ish text, using jsoup: headings, lists, links, tables. Long pages come back in pieces, and `save_as` downloads a file (a PDF, a CSV) into the workspace. It never sends credentials, and it refuses non-http(s) URLs and private, loopback and link-local addresses (including cloud metadata endpoints such as `169.254.169.254`). Redirects are followed by hand, and every hop is checked again. `WebFetchOptions` adds domain allow and block lists, size, timeout and redirect limits, and, for intranet deployments only, `withAllowPrivateNetworks(true)`. One limit to know about: the DNS check can be defeated by DNS rebinding, so where that matters, also block private ranges at an egress proxy or firewall.
+
+### Any HTTP API: `api_request`
+
+```java
+ApiConnection stripe = ApiConnection.builder("stripe", "https://api.stripe.com/v1")
+    .description("Payments: customers, invoices, subscriptions")
+    .auth(ApiAuth.bearer(scope -> secrets.stripeKeyFor(scope.tenantId())))  // or header / basic / queryParameter
+    .allowWrites()                                   // connections are read-only (GET/HEAD) unless enabled
+    .allowedPaths("/customers/**", "/invoices/**")   // defaults to everything under the base URL
+    .build();
+registry.register(ApiTools.request(List.of(stripe, crm)));
+```
+
+The model names a connection, a method and a path. **It never sees the credentials, and it can't leave the base URL.** Paths with `..` (including percent-encoded), `//`, backslashes or an embedded query are refused.
+
+- Credentials are resolved per run from the `Scope`, so each tenant can use its own keys.
+- Responses come back as status plus body. `select` (a JSON Pointer) returns just part of a large JSON response, and long bodies are cut off at `maxResponseChars`. `save_as` stores the raw body in the workspace.
+- A 4xx or 5xx is an ordinary result the model can act on. An API that can't be reached at all ends the run.
+- Redirects aren't followed; they come back with their `Location`.
+
+### Spreadsheets: `spreadsheet_create` / `_read` / `_update`
+
+Excel workbooks in the workspace, through Apache POI. `spreadsheet_create` builds a whole workbook from one spec: sheets, rows, formulas (`"=SUM(B2:B10)"`), number formats per column, widths, and a styled, frozen header row. Cell conventions:
+
+- numbers as numbers;
+- `=` starts a formula;
+- `YYYY-MM-DD` is a date;
+- a leading `'` forces text, e.g. `'00123`.
+
+`spreadsheet_read` shows any `.xlsx` or `.xls` as a grid with row numbers and column letters, as values or as formulas. `spreadsheet_update` sets cells, appends rows and adds sheets; an `.xls` is saved as `.xlsx`. **Every formula is evaluated before saving.** An unparseable formula comes back as a fixable error, cells that evaluate to `#DIV/0!`, `#REF!` and so on are listed for the model to fix, and saved files recalculate when opened. Created files show up in `result.changedFiles()`.
+
+### MCP servers
+
+```java
+McpClient github = McpClient.http("github", URI.create("https://api.githubcopilot.com/mcp/"), Map.of("Authorization", "Bearer " + token));
+McpClient files = McpClient.stdio("files", List.of("npx", "-y", "@modelcontextprotocol/server-filesystem", "/srv/data"));
+registry.registerAll(github.tools()).registerAll(files.tools());   // close() the clients on shutdown
+```
+
+The client speaks [MCP](https://modelcontextprotocol.io) over stdio or Streamable HTTP, including event-stream responses and session ids. That's how you give an agent tools written in any language, or the many existing MCP servers.
+
+- **Names.** Tools are named `<client>_<tool>` and adjusted to provider naming rules.
+- **Failures.** A tool result flagged `isError` comes back to the model as a fixable error. A server that can't be reached ends the run.
+- **Credentials.** One client holds one set of credentials, so create a client per tenant if tenants need their own.
+- **Scope.** It covers tools only: no resources, prompts or sampling.
+
 ## Extending the library: your own memory, workspace and tools
 
 Everything an agent touches outside the model is pluggable: where it remembers things (`MemoryStore`), where it keeps files (`Workspace`), and what it can do (tools). This section is the contract for writing your own.
@@ -436,6 +586,34 @@ Guidelines:
 - **Blocking is fine.** Handlers run on the run's virtual thread, so a tool can call a slow API, or wait for a human.
 
 The built-in `MemoryTools` and `WorkspaceTools` in `io.github.manishpateluk.llmagentloop.tool.builtin` are written exactly this way and make good reference implementations.
+
+**Helpers.**
+
+- `ToolSchemas` builds parameter schemas within the safe subset: `object`, `string`, `integer`, `bool`, `stringArray`, `stringEnum`, `array`.
+- `ToolArguments` reads arguments and turns bad ones into `ToolInputException`s: `requireString`, `optionalInt(name, default, min, max)`, `optionalStringList`, and so on.
+- `context.report(MessageType.INFO, "...")` sends a status update from inside a long-running tool to the run's `onMessage`.
+
+### A custom skill
+
+A skill is your tools plus the know-how to use them. The instructions are added to every agent that has the skill:
+
+```java
+Skill payroll = new Skill("UK payroll", "Run payroll for UK employees.", """
+        - Always confirm the tax year before calculating anything.
+        - Use payroll_calculate for every figure; never estimate.
+        - Payroll is final once submitted: ask the user before calling payroll_submit.
+        """, List.of(payrollCalculateTool, payrollSubmitTool));
+
+Agent agent = Agent.builder(definition).skills(payroll, Skills.spreadsheets()).build();
+```
+
+### Other extension points
+
+- **`SearchProvider`.** Any search backend for `web_search`. Return `SearchProvider.Result(title, url, snippet)`s. Throw `ToolInputException` for things like rate limiting, and any other exception for misconfiguration.
+- **`ApiAuth`.** Any authentication scheme for `api_request`: return the headers and/or query parameters to add for a given `Scope`.
+- **`HumanTools.Handler`.** How `ask_human` reaches your user, and how long it waits.
+- **`AgentDelegate`.** Delegate to anything: a remote agent service, a queue a human team works from.
+- **`MemoryStore`, `Workspace`.** Covered above.
 
 ## Learn more
 

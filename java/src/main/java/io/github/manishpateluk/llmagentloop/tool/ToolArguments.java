@@ -1,17 +1,15 @@
-package io.github.manishpateluk.llmagentloop.tool.builtin;
-
-import io.github.manishpateluk.llmagentloop.tool.ToolInputException;
+package io.github.manishpateluk.llmagentloop.tool;
 
 import java.util.List;
 import java.util.Map;
 
 /** Reads model-supplied tool arguments, turning bad ones into {@link ToolInputException}s the model can act on. */
-final class ToolArgs {
+public final class ToolArguments {
 
-    private ToolArgs() {
+    private ToolArguments() {
     }
 
-    static String requireString(Map<String, Object> args, String name) {
+    public static String requireString(Map<String, Object> args, String name) {
         Object value = args.get(name);
         if (!(value instanceof String text) || text.isBlank()) {
             throw new ToolInputException("'" + name + "' is required and must be a non-empty string");
@@ -20,7 +18,7 @@ final class ToolArgs {
     }
 
     /** Like {@link #requireString} but allows an empty string — for content that may legitimately be empty. */
-    static String requireStringAllowEmpty(Map<String, Object> args, String name) {
+    public static String requireStringAllowEmpty(Map<String, Object> args, String name) {
         Object value = args.get(name);
         if (!(value instanceof String text)) {
             throw new ToolInputException("'" + name + "' is required and must be a string");
@@ -28,7 +26,7 @@ final class ToolArgs {
         return text;
     }
 
-    static String optionalString(Map<String, Object> args, String name) {
+    public static String optionalString(Map<String, Object> args, String name) {
         Object value = args.get(name);
         if (value == null) {
             return null;
@@ -39,7 +37,7 @@ final class ToolArgs {
         return text;
     }
 
-    static int optionalInt(Map<String, Object> args, String name, int defaultValue, int min, int max) {
+    public static int optionalInt(Map<String, Object> args, String name, int defaultValue, int min, int max) {
         Object value = args.get(name);
         if (value == null) {
             return defaultValue;
@@ -58,7 +56,7 @@ final class ToolArgs {
         return (int) number;
     }
 
-    static boolean optionalBoolean(Map<String, Object> args, String name, boolean defaultValue) {
+    public static boolean optionalBoolean(Map<String, Object> args, String name, boolean defaultValue) {
         Object value = args.get(name);
         if (value == null) {
             return defaultValue;
@@ -72,7 +70,7 @@ final class ToolArgs {
         throw new ToolInputException("'" + name + "' must be true or false");
     }
 
-    static List<String> optionalStringList(Map<String, Object> args, String name) {
+    public static List<String> optionalStringList(Map<String, Object> args, String name) {
         Object value = args.get(name);
         if (value == null) {
             return List.of();
