@@ -1,9 +1,8 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
 import lombok.Builder;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.List;
 
@@ -35,7 +34,7 @@ public record AgentProfile(
     /** The step-count safety net until real cost/time budgets exist. */
     public static final int DEFAULT_MAX_STEPS = 25;
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     public AgentProfile {
         planMode = planMode == null ? PlanMode.AUTO : planMode;
@@ -48,7 +47,7 @@ public record AgentProfile(
     public String toSystemInstructionsFragment() {
         try {
             return "Agent operating profile: " + JSON.writeValueAsString(this);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("Failed to serialize AgentProfile to JSON", e);
         }
     }

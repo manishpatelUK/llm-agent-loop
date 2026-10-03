@@ -25,7 +25,7 @@ class ToolRegistryTest {
     @Test
     void registeredToolIsFindableByName() {
         ToolRegistry registry = new ToolRegistry();
-        ToolHandler handler = args -> "echo:" + args.get("text");
+        ToolHandler handler = (args, context) -> "echo:" + args.get("text");
 
         registry.register(echoDefinition, handler);
 
@@ -47,7 +47,7 @@ class ToolRegistryTest {
         registry.register(echoDefinition, args -> "first");
         registry.register(echoDefinition, args -> "second");
 
-        assertThat(registry.find("echo").get().handler().handle(Map.of())).isEqualTo("second");
+        assertThat(registry.find("echo").get().handler().handle(Map.of(), null)).isEqualTo("second");
         assertThat(registry.definitions()).hasSize(1);
     }
 }

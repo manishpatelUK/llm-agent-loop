@@ -127,6 +127,32 @@ Implemented so far (Java):
     result is fed back as that call's tool result and the run continues; `Optional.empty()` — and
     the default, `UnregisteredToolHandler.NONE` — ends the run via `onError`
     (`UnregisteredToolException`).
+  - Every call that offers tools sets `llm-router` 1.0.5's `requiredFeatures(TOOLS)`, so it only
+    routes to models that can call tools, rather than having them (and the loop's own
+    `report_complete`) silently stripped.
+- **Reusable agents: scope, memory, workspace, and tool context** — one `AgentLoop` can serve
+  every user of a multi-user product. Each run carries a `Scope` (opaque tenant/user/session ids
+  from the implementor; a private throwaway scope when omitted), and long-term memory
+  (`MemoryStore`) and file storage (`Workspace`) are partitioned by it at a configurable
+  `ScopeLevel` — `USER` by default, so a user's sessions share data and users never do. Both are
+  interfaces for implementors to back with their own storage, with heap-only `InMemoryMemoryStore`
+  and `InMemoryWorkspace` provided (no local-disk workspace, deliberately). Tools receive a
+  `ToolContext` whose memory and workspace are already bound to the run's scope, so a model can't
+  reach another user's data; `ScopedWorkspace` enforces path safety (no `..`, absolute paths or
+  drive letters) and `WorkspaceLimits` in front of any backend. A handler can throw
+  `ToolInputException` to hand a fixable problem back to the model as an `"Error: ..."` result
+  instead of ending the run. `AgentLoopResult.changedFiles()` lists the workspace files a run
+  produced. `Scope.key()` gives implementors a stable, collision-safe storage key (e.g.
+  `acme/alice/*`) for their own stores. The
+  [Java README](java/README.md#extending-the-library-your-own-memory-workspace-and-tools) has a
+  full guide to implementing your own `MemoryStore`, `Workspace` and tools.
+- **Built-in tools** (`io.github.manishpateluk.llmagentloop.tool.builtin`) — `MemoryTools`
+  (`memory_save`/`memory_search`/`memory_forget`) and `WorkspaceTools`
+  (`workspace_list`/`read`/`write`/`edit`/`delete`/`search`), registered with
+  `ToolRegistry.registerAll(...)`. Still to come: utility tools (date/time, calculation, data
+  queries), `ask_human`, `delegate_to_agent`, `web_fetch`/`web_search`, `api_request` over
+  implementor-registered connections, spreadsheets (Apache POI), an MCP client, `Skill`s
+  (instructions + tools), and the md-defined agent runner on top.
 - **History compression** (`io.github.manishpateluk.llmagentloop.compression`) — `HistoryCompressor`
   is the single entry point (`HistoryCompressor.compress(...)`, with progressively-defaulted
   overloads). It compares the request's estimated token size (padded 5% for safety) against the
@@ -152,5 +178,6 @@ Implemented so far (Java):
 
 ## Structure
 
-- [`java/`](java/) — Java implementation, built with Maven, depending on
-  [`llm-router`](https://github.com/manishpatelUK/llm-router) from Maven Central.
+- [`java/`](java/) — Java implementation (Java 25+), built with Maven, depending on
+  [`llm-router`](https://github.com/manishpatelUK/llm-router) 1.0.5+ from Maven Central and on
+  Jackson 3 (`tools.jackson.*`) for its own JSON handling.

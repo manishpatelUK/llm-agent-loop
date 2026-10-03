@@ -1,9 +1,8 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.manishpateluk.llmrouter.LlmRouter;
 import com.manishpateluk.llmrouter.RequestInterceptor;
+import com.manishpateluk.llmrouter.config.Feature;
 import com.manishpateluk.llmrouter.config.RouterConfig;
 import com.manishpateluk.llmrouter.model.Attachment;
 import com.manishpateluk.llmrouter.model.Message;
@@ -23,11 +22,21 @@ import io.github.manishpateluk.llmagentloop.execution.Execution;
 import io.github.manishpateluk.llmagentloop.execution.StepAction;
 import io.github.manishpateluk.llmagentloop.execution.StepRecord;
 import io.github.manishpateluk.llmagentloop.execution.TerminationReason;
+import io.github.manishpateluk.llmagentloop.memory.MemoryEntry;
 import io.github.manishpateluk.llmagentloop.memory.MemoryStore;
+import io.github.manishpateluk.llmagentloop.memory.ScopedMemory;
+import io.github.manishpateluk.llmagentloop.tool.ToolContext;
+import io.github.manishpateluk.llmagentloop.tool.ToolInputException;
+import io.github.manishpateluk.llmagentloop.workspace.ScopedWorkspace;
+import io.github.manishpateluk.llmagentloop.workspace.Workspace;
+import io.github.manishpateluk.llmagentloop.workspace.WorkspaceLimits;
 import io.github.manishpateluk.llmagentloop.plan.Plan;
 import io.github.manishpateluk.llmagentloop.plan.PlanStep;
 import io.github.manishpateluk.llmagentloop.tool.RegisteredTool;
 import io.github.manishpateluk.llmagentloop.tool.ToolRegistry;
+
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.io.File;
 import java.io.IOException;
@@ -40,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.concurrent.ExecutorService;
@@ -88,15 +98,26 @@ public final class AgentLoop {
 
     private static final ExecutorService EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
     /** Lenient: structured output carries fields the records don't (e.g. a plan's {@code summary}), and models add extras. */
-    private static final ObjectMapper JSON = new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+    private static final JsonMapper JSON = JsonMapper.builder().disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).build();
 
     /** Turns end without calling any tool at all still get a final answer, rather than failing the run. */
     private static final String NO_TOOL_CALL_FALLBACK_NOTE =
             "Model responded without calling a tool; treating its response as the final answer.";
 
+    /** How many memories the loop recalls into each step's context, unprompted. */
+    private static final int AUTO_RECALL_LIMIT = 5;
+
+    /** Every call that offers tools — including the loop's own {@code report_complete} — only routes to models that can call them. */
+    private static final RouterConfig TOOLS_REQUIRED =
+            RouterConfig.builder().requiredFeatures(Set.of(Feature.TOOLS)).build();
+
     private final LlmRouter router;
     private final ToolRegistry tools;
     private final MemoryStore memory;
+    private final ScopeLevel memoryLevel;
+    private final Workspace workspace;
+    private final ScopeLevel workspaceLevel;
+    private final WorkspaceLimits workspaceLimits;
 
     public AgentLoop(LlmRouter router) {
         this(router, new ToolRegistry());
@@ -107,9 +128,19 @@ public final class AgentLoop {
     }
 
     public AgentLoop(LlmRouter router, ToolRegistry tools, MemoryStore memory) {
+        this(router, tools, memory, ScopeLevel.USER, Workspace.NONE, ScopeLevel.USER, WorkspaceLimits.DEFAULT);
+    }
+
+    private AgentLoop(
+            LlmRouter router, ToolRegistry tools, MemoryStore memory, ScopeLevel memoryLevel,
+            Workspace workspace, ScopeLevel workspaceLevel, WorkspaceLimits workspaceLimits) {
         this.router = Objects.requireNonNull(router, "router");
         this.tools = Objects.requireNonNull(tools, "tools");
         this.memory = Objects.requireNonNull(memory, "memory");
+        this.memoryLevel = Objects.requireNonNull(memoryLevel, "memoryLevel");
+        this.workspace = Objects.requireNonNull(workspace, "workspace");
+        this.workspaceLevel = Objects.requireNonNull(workspaceLevel, "workspaceLevel");
+        this.workspaceLimits = Objects.requireNonNull(workspaceLimits, "workspaceLimits");
     }
 
     /** See {@link Builder}. */
@@ -136,6 +167,10 @@ public final class AgentLoop {
         private List<CompressionMethod> compressionMethods;
         private ToolRegistry tools = new ToolRegistry();
         private MemoryStore memory = MemoryStore.NONE;
+        private ScopeLevel memoryLevel = ScopeLevel.USER;
+        private Workspace workspace = Workspace.NONE;
+        private ScopeLevel workspaceLevel = ScopeLevel.USER;
+        private WorkspaceLimits workspaceLimits = WorkspaceLimits.DEFAULT;
 
         private Builder() {
         }
@@ -157,8 +192,33 @@ public final class AgentLoop {
             return this;
         }
 
+        /** Long-term memory, e.g. an {@code InMemoryMemoryStore} or your own; defaults to {@link MemoryStore#NONE}. */
         public Builder memory(MemoryStore memory) {
             this.memory = memory;
+            return this;
+        }
+
+        /** How widely memory is shared across {@link Scope}s; defaults to {@link ScopeLevel#USER}. */
+        public Builder memoryLevel(ScopeLevel memoryLevel) {
+            this.memoryLevel = memoryLevel;
+            return this;
+        }
+
+        /** File storage for the workspace tools, e.g. an {@code InMemoryWorkspace} or your own; defaults to {@link Workspace#NONE}. */
+        public Builder workspace(Workspace workspace) {
+            this.workspace = workspace;
+            return this;
+        }
+
+        /** How widely workspace files are shared across {@link Scope}s; defaults to {@link ScopeLevel#USER}. */
+        public Builder workspaceLevel(ScopeLevel workspaceLevel) {
+            this.workspaceLevel = workspaceLevel;
+            return this;
+        }
+
+        /** Caps on each scope's workspace; defaults to {@link WorkspaceLimits#DEFAULT}. */
+        public Builder workspaceLimits(WorkspaceLimits workspaceLimits) {
+            this.workspaceLimits = workspaceLimits;
             return this;
         }
 
@@ -188,7 +248,7 @@ public final class AgentLoop {
             }
 
             LlmRouter effectiveRouter = router != null ? router : buildRouter();
-            return new AgentLoop(effectiveRouter, tools, memory);
+            return new AgentLoop(effectiveRouter, tools, memory, memoryLevel, workspace, workspaceLevel, workspaceLimits);
         }
 
         private LlmRouter buildRouter() {
@@ -266,6 +326,9 @@ public final class AgentLoop {
         private final List<Attachment> attachments;
 
         private final UUID executionId = UUID.randomUUID();
+        private final Scope scope;
+        private final ScopedMemory scopedMemory;
+        private final ScopedWorkspace scopedWorkspace;
         private final List<StepRecord> steps = new ArrayList<>();
         private final Instant startedAt = Instant.now();
         private int nextThread = 1;
@@ -278,6 +341,9 @@ public final class AgentLoop {
             this.request = request;
             this.profile = request.agentProfile() != null ? request.agentProfile() : AgentProfile.DEFAULT;
             this.attachments = toAttachments(request.files());
+            this.scope = request.scope() != null ? request.scope() : Scope.ephemeral(executionId);
+            this.scopedMemory = memory.scopedTo(scope.atLevel(memoryLevel));
+            this.scopedWorkspace = workspace.scopedTo(scope.atLevel(workspaceLevel), workspaceLimits);
         }
 
         void execute() {
@@ -411,9 +477,10 @@ public final class AgentLoop {
                 }
 
                 List<Message> effectiveHistory = new ArrayList<>(history);
-                List<String> memoryHints = memory.recall(goal);
-                if (!memoryHints.isEmpty()) {
-                    effectiveHistory.add(Message.system("Relevant memory:\n- " + String.join("\n- ", memoryHints)));
+                List<MemoryEntry> recalled = scopedMemory.search(goal, AUTO_RECALL_LIMIT);
+                if (!recalled.isEmpty()) {
+                    effectiveHistory.add(Message.system("Relevant memory:\n- " + String.join("\n- ",
+                            recalled.stream().map(MemoryEntry::content).toList())));
                 }
 
                 Request req = Request.builder()
@@ -422,6 +489,7 @@ public final class AgentLoop {
                         .history(List.copyOf(effectiveHistory))
                         .attachments(attachments)
                         .tools(List.copyOf(availableTools))
+                        .config(TOOLS_REQUIRED)
                         .build();
                 Response response = call(thread, req);
 
@@ -477,7 +545,13 @@ public final class AgentLoop {
             Optional<RegisteredTool> registered = tools.find(call.getName());
             if (registered.isPresent()) {
                 emit(thread, MessageType.TOOL_CALL, "Calling tool: " + call.getName());
-                return registered.get().handler().handle(call.getArguments());
+                ToolContext context = new ToolContext(executionId, thread, scope, scopedMemory, scopedWorkspace);
+                try {
+                    return registered.get().handler().handle(call.getArguments(), context);
+                } catch (ToolInputException e) {
+                    emit(thread, MessageType.WARNING, "Tool " + call.getName() + " reported: " + e.getMessage());
+                    return "Error: " + e.getMessage();
+                }
             }
 
             emit(thread, MessageType.TOOL_CALL, "Handing unregistered tool to the caller: " + call.getName());
@@ -585,7 +659,7 @@ public final class AgentLoop {
 
         private void complete(Response finalResponse, TerminationReason reason) {
             Execution execution = new Execution(executionId, List.copyOf(steps), reason);
-            request.onResult().accept(new AgentLoopResult(finalResponse, execution));
+            request.onResult().accept(new AgentLoopResult(finalResponse, execution, List.copyOf(scopedWorkspace.changedPaths())));
         }
 
         /** The best-effort "result as is" when a bound was hit mid-run: the last response's own content, if any. */

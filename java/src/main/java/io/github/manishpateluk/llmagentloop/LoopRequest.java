@@ -35,6 +35,11 @@ import java.util.function.Consumer;
  *                        on the {@link AgentLoop} — see {@link UnregisteredToolHandler}. Defaults to
  *                        {@link UnregisteredToolHandler#NONE}, which ends the run with an
  *                        {@link UnregisteredToolException}.
+ * @param scope           optional; whose memory and workspace this run uses — see {@link Scope}.
+ *                        Without one the run gets a private, throwaway scope: nothing it saves is
+ *                        visible to any other run, so nothing persists between runs either. Pass a
+ *                        scope (e.g. {@code Scope.forUser(userId, sessionId)}) to keep memory and
+ *                        files across a user's runs.
  */
 @Builder
 public record LoopRequest(
@@ -46,7 +51,8 @@ public record LoopRequest(
         Consumer<AgentMessage> onMessage,
         Integer maxCostUsdCents,
         Duration maxDuration,
-        UnregisteredToolHandler onUnregisteredTool) {
+        UnregisteredToolHandler onUnregisteredTool,
+        Scope scope) {
 
     public LoopRequest {
         Objects.requireNonNull(prompt, "prompt");
