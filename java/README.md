@@ -93,6 +93,7 @@ RunHandle handle = runtime.run(assistant, LoopRequest.builder()
     .attachments(uploads)                       // List<InputFile>: images, PDFs, CSVs, documents...
     .scope(Scope.of(tenantId, userId, sessionId))
     .onMessage(status -> showProgress(status))
+    .answerStream(chatUi::stream)               // optional: the answer as it's written — see "Streaming the answer"
     .onResult(result -> reply(result.finalResponse().getContent(), result.changedFiles()))
     .onError(error -> reportFailure(error)));
 
@@ -190,6 +191,21 @@ If you keep chat history yourself, pass `.history(List.of(Message.user(...), Mes
 - Its thread is interrupted, so a blocking tool, model call or `ask_human` wait ends early too.
 - It finishes through `onResult` with `TerminationReason.CANCELLED` and whatever answer it had, and that turn is still saved to the conversation.
 - With `runAndWait`, interrupting the calling thread does the same.
+
+**Streaming the answer.** Pass an `AnswerStream` to show the answer as it's written:
+
+```java
+.answerStream(new AnswerStream() {
+    public void onText(String delta) { ui.append(delta); }
+    public void onDiscard() { ui.clear(); }     // that text turned out to be a preamble to a tool call
+})
+```
+
+- **How the answer is written.** The model is told to give its final answer as plain text, and each user-facing step streams as it's generated.
+- **Why discards happen.** A step can't be known in advance to be the answer: if it turns out to call tools after all ("Let me look that up..."), `onDiscard()` tells you to drop what you showed, and the next step streams afresh. When the run finishes, the text since the last discard is the final answer, the same as `finalResponse().getContent()`.
+- **What doesn't stream.** Sub-tasks and a plan's intermediate steps don't stream.
+- **Providers.** Anthropic and OpenAI stream token by token, through `llm-router`'s `completeStreaming`. Other providers deliver each step's text in one piece.
+- **`report_complete`.** It still works when you don't stream. When you do, it isn't offered for user-facing steps, so the answer always arrives as streamable text.
 
 **Choosing models.** Set a default `RouterConfig` per agent with `AgentProfile.builder().routerConfig(...)`, or in an `Agent`'s front matter. Override it per run with `LoopRequest.builder().routerConfig(...)`. That's how you run chat on a cheap model and contract drafting on a strong one, or pin a provider per tenant. The loop keeps your choices and adds only what its own calls need: tool support where tools are offered, and cost-optimized ordering for its internal plan check.
 
@@ -401,7 +417,10 @@ Every tool is a `RegisteredTool`: register it on a `ToolRegistry` (`register`/`r
 |---|---|---|
 | `memory_save`, `memory_search`, `memory_forget` | `tool.builtin.MemoryTools.all()` | a `MemoryStore` |
 | `workspace_list`, `_read`, `_write`, `_edit`, `_delete`, `_search`, `_view` (show an image/PDF to the model) | `tool.builtin.WorkspaceTools.all()` | a `Workspace` |
-| `document_read` (text of PDF, Word, PowerPoint files, paged) | `tool.office.DocumentTools.all()` | a `Workspace` |
+| `document_read` (text of PDF, Word, PowerPoint files, paged), `document_create` (Markdown → .docx or .pdf) | `tool.office.DocumentTools.all()` | a `Workspace` |
+| `presentation_create` (.pptx from a list of slides) | `tool.office.PresentationTools.all()` | a `Workspace` |
+| `email_send`, `email_draft`, `email_search`, `email_read` | `tool.email.EmailTools.all(service)` | your `EmailService` |
+| `calendar_list_events`, `calendar_create_event`, `calendar_find_free_time` | `tool.calendar.CalendarTools.all(service)` | your `CalendarService` |
 | `current_datetime`, `date_calculate` (business days too), `calculate` (exact decimal) | `tool.builtin.UtilityTools.all()` | — |
 | `data_query` (filter/group/aggregate CSV or JSON, save results) | `tool.builtin.DataTools.all()` | a `Workspace` |
 | `ask_human` | `tool.builtin.HumanTools.askHuman(handler)` | your handler that reaches the user |
@@ -409,7 +428,7 @@ Every tool is a `RegisteredTool`: register it on a `ToolRegistry` (`register`/`r
 | `web_fetch` | `tool.web.WebTools.fetch()` | — |
 | `web_search` | `tool.web.WebTools.search(provider)` | a `SearchProvider`: `BraveSearch` or `TavilySearch` built in |
 | `api_request` | `tool.api.ApiTools.request(connections)` | `ApiConnection`s you register |
-| `spreadsheet_create`, `_read`, `_update` (Excel, via Apache POI) | `tool.office.SpreadsheetTools.all()` | a `Workspace` |
+| `spreadsheet_create`, `_read`, `_update` (Excel, with charts, via Apache POI) | `tool.office.SpreadsheetTools.all()` | a `Workspace` |
 | any MCP server's tools | `tool.mcp.McpClient.stdio(...)` / `.http(...)` → `.tools()` | an MCP server |
 
 ### Asking the user: `ask_human`
@@ -468,6 +487,47 @@ Excel workbooks in the workspace, through Apache POI. `spreadsheet_create` build
 - a leading `'` forces text, e.g. `'00123`.
 
 `spreadsheet_read` shows any `.xlsx` or `.xls` as a grid with row numbers and column letters, as values or as formulas. `spreadsheet_update` sets cells, appends rows and adds sheets; an `.xls` is saved as `.xlsx`. **Every formula is evaluated before saving.** An unparseable formula comes back as a fixable error, cells that evaluate to `#DIV/0!`, `#REF!` and so on are listed for the model to fix, and saved files recalculate when opened. Created files show up in `result.changedFiles()`.
+
+**Charts.** Both `spreadsheet_create` (per sheet) and `spreadsheet_update` take a `charts` list. Each chart has:
+
+- a `type`: `column`, `bar`, `line` or `pie`;
+- a `title`;
+- a `categories` range, e.g. `A2:A13`, or `Data!A2:A13` for another sheet;
+- one or more `series`, each a `values` range and a `name`;
+- optionally an `anchor` cell, `width` and `height`.
+
+Charts reference the cells, so they update when the data changes.
+
+### Documents and presentations: `document_create`, `presentation_create`
+
+`document_create` turns Markdown into a Word document or a PDF; the format follows the path's extension (`.docx` or `.pdf`). Models write good Markdown, so this is the most reliable way to get a well-structured document out of them. The supported Markdown:
+
+- headings, paragraphs, `**bold**`, `*italic*`, `` `code` `` and `[links](https://...)`;
+- bullet and numbered lists, nested by indenting two spaces;
+- quotes, fenced code blocks and pipe tables;
+- `---` for a horizontal rule and `<!-- pagebreak -->` for a page break.
+
+PDFs are laid out on A4 pages with real line wrapping, page breaks, bordered tables and clickable links. PDFs use PDFBox's built-in standard fonts, which can't show most non-Latin scripts or emoji; those characters come out as `?`. Use `.docx` for content in other scripts.
+
+`presentation_create` builds a `.pptx` from a list of slides: a title slide (title and subtitle) or a content slide (title and bullets). Bullets nest by leading spaces, and each slide can have speaker notes. `document_read` reads all three formats back. `Skills.documents()` bundles these tools with guidance.
+
+### Email and calendar: `email_*`, `calendar_*`
+
+The library defines the interfaces and tools. You supply the connection to Gmail, Microsoft Graph, SMTP/IMAP, CalDAV or your own system:
+
+```java
+registry.registerAll(EmailTools.all(myEmailService))        // email_send, email_draft, email_search, email_read
+        .registerAll(CalendarTools.all(myCalendarService));  // calendar_list_events, calendar_create_event, calendar_find_free_time
+// or Agent.builder(...).skills(Skills.email(myEmailService), Skills.calendar(myCalendarService))
+```
+
+- **`EmailService`.** Only `send` is required. `saveDraft`, `search` and `read` are optional: if you don't implement one, the tool reports "not available" to the model rather than failing the run.
+  - Attachments are taken from the workspace by path, so the agent can send what it just created.
+  - To keep a person in the loop for every send, register only `EmailTools.draft(...)`.
+- **`CalendarService`.** Only `listEvents` is required. `createEvent` and `busyTimes` (other people's availability) are optional.
+  - `calendar_find_free_time` works out free slots itself from your events, within working hours on weekdays, both configurable.
+  - Times are exchanged with the model as local date-times in a named timezone, which models handle far more reliably than raw timestamps.
+- **Whose account.** Use `context.scope()` in your implementation to pick the right user's mailbox or calendar.
 
 ### MCP servers
 
@@ -765,6 +825,7 @@ Agent agent = Agent.builder(definition).skills(payroll, Skills.spreadsheets()).b
 - **`ApiAuth`.** Any authentication scheme for `api_request`: return the headers and/or query parameters to add for a given `Scope`.
 - **`HumanTools.Handler`.** How `ask_human` reaches your user, and how long it waits.
 - **`AgentDelegate`.** Delegate to anything: a remote agent service, a queue a human team works from.
+- **`EmailService`, `CalendarService`.** Mail and calendar backends for the `email_*` and `calendar_*` tools; see "Email and calendar" above.
 - **`ConversationStore`.** Where chat sessions' turns live: `load(scope)` returns the session's messages, oldest first, and `append(scope, messages)` adds to the end. The scope is the full tenant/user/session, so key storage by `scope.key()`.
 - **`MemoryStore`, `Workspace`.** Covered above.
 

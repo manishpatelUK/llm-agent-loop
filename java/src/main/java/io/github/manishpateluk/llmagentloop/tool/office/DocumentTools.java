@@ -36,6 +36,10 @@ import java.util.Map;
 public final class DocumentTools {
 
     public static final String READ = "document_read";
+    public static final String CREATE = "document_create";
+
+    /** Largest Markdown source {@code document_create} accepts in one call. */
+    static final int MAX_SOURCE_CHARS = 500_000;
 
     static final int DEFAULT_READ_CHARS = 20_000;
     static final int MAX_READ_CHARS = 100_000;
@@ -44,7 +48,52 @@ public final class DocumentTools {
     }
 
     public static List<RegisteredTool> all() {
-        return List.of(read());
+        return List.of(read(), create());
+    }
+
+    public static RegisteredTool create() {
+        return new RegisteredTool(
+                ToolDefinition.builder()
+                        .name(CREATE)
+                        .description("Create a Word document (.docx) or PDF (.pdf) in the workspace from Markdown, or "
+                                + "replace an existing one — for letters, contracts, reports, memos. The format follows the "
+                                + "path's extension. Supports headings (#), paragraphs, **bold**, *italic*, `code`, "
+                                + "[links](https://...), bullet and numbered lists (indent two spaces to nest), > quotes, "
+                                + "``` code blocks, | pipe | tables |, --- rules and <!-- pagebreak -->.")
+                        .parameters(ToolSchemas.object(List.of("path", "markdown"),
+                                "path", ToolSchemas.string("Workspace path ending in .docx or .pdf, e.g. \"legal/nda-draft.docx\"."),
+                                "markdown", ToolSchemas.string("The document's content as Markdown."),
+                                "title", ToolSchemas.string("Optional document title, stored in the file's properties.")))
+                        .build(),
+                DocumentTools::create);
+    }
+
+    private static String create(Map<String, Object> args, ToolContext context) {
+        String path = ToolArguments.requireString(args, "path");
+        String markdown = ToolArguments.requireStringAllowEmpty(args, "markdown");
+        String title = ToolArguments.optionalString(args, "title");
+        if (markdown.length() > MAX_SOURCE_CHARS) {
+            throw new ToolInputException("The document is longer than " + MAX_SOURCE_CHARS + " characters; split it into several files");
+        }
+        String lower = path.toLowerCase(Locale.ROOT);
+        List<MarkdownBlocks.Block> blocks = MarkdownBlocks.parse(markdown);
+        byte[] bytes;
+        String mediaType;
+        if (lower.endsWith(".docx")) {
+            bytes = DocxWriter.write(title, blocks);
+            mediaType = MediaTypes.DOCX;
+        } else if (lower.endsWith(".pdf")) {
+            bytes = PdfWriter.write(title, blocks);
+            mediaType = "application/pdf";
+        } else {
+            throw new ToolInputException("'path' must end in .docx or .pdf, was \"" + path + "\"");
+        }
+        try {
+            WorkspaceFile file = context.workspace().write(path, bytes, mediaType);
+            return "Created " + file.path() + " (" + file.size() + " bytes, " + blocks.size() + " blocks).";
+        } catch (WorkspaceException e) {
+            throw new ToolInputException(e.getMessage());
+        }
     }
 
     public static RegisteredTool read() {

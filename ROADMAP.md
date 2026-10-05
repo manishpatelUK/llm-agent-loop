@@ -3,20 +3,13 @@
 Planned work that isn't implemented yet. Each item says what's missing and the direction agreed so
 far. Remove an item once it ships (and record it in the README's Status section).
 
-## Next
-
-- **Streaming responses.** Final answers arrive in one piece; only status updates stream (via
-  `onMessage`). Needs streaming support in `llm-router` first, then an `onToken`-style callback on
-  `LoopRequest` that forwards the final answer's tokens as they arrive.
-
 ## Producing and doing more
 
-- **Documents beyond spreadsheets.** Create Word documents (Apache POI's XWPF, already a dependency),
-  PowerPoint decks (POI XSLF) and PDFs (PDFBox, already a dependency for reading), mirroring the
-  spreadsheet tools: one declarative spec per call, saved to the workspace. Charts in spreadsheets.
-- **Email and calendar.** An `EmailSender` / calendar interface with built-in tools (send, draft,
-  find a meeting slot), the way `SearchProvider` backs `web_search`. Possible today via MCP or
-  `api_request`, but common enough to deserve first-class tools.
+- **Email and calendar providers.** The `EmailService`/`CalendarService` interfaces and their tools
+  exist; ready-made implementations (Gmail, Microsoft Graph, SMTP/IMAP, CalDAV) could ship as
+  optional modules.
+- **Richer documents.** Images in Word/PDF/PowerPoint output, embedded fonts for non-Latin scripts in
+  PDFs, real Word list numbering and heading styles, 16:9 slide layouts, and more chart types.
 - **Semantic search over the user's own material.** Memory search is keyword-only and
   `workspace_search` is substring matching. Add an embeddings interface and use it for memory recall
   and for "find what we agreed with Acme" across workspace documents.
@@ -50,6 +43,11 @@ far. Remove an item once it ships (and record it in the README's Status section)
   compressed to fit each model); add summarization or truncation at the store level.
 
 ## Known limitations
+
+- `document_create`'s PDFs use the standard PDF fonts, so most non-Latin scripts and emoji render as
+  `?` (Word output is unaffected).
+- Answer streaming is token-by-token only for providers with native streaming in `llm-router`
+  (Anthropic, OpenAI); others deliver each step's text in one piece.
 
 - `llm-router` drops *all* of a request's attachments when the chosen model can't take *one* of them
   (e.g. a PDF sent to a model with vision but no file input also loses the images). Attachments are

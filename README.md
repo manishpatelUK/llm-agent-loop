@@ -143,6 +143,7 @@ Implemented so far (Java):
   - **Model choice.** A `RouterConfig` per agent, in front matter or code, or per request.
   - **`ToolInterceptor`.** Before/after hooks on every tool call, for approvals, audit logs, redaction or rate limits.
   - **Per-tool timeouts.** Overrunning tools are interrupted, and the model is told.
+  - **Answer streaming.** `LoopRequest.answerStream` receives the final answer as it's written, via `llm-router`'s `completeStreaming`. Final answers are plain text, and a step whose streamed text turns out to precede a tool call is discarded.
 - **Reusable agents: scope, memory, workspace, and tool context** — one `AgentLoop` can serve
   every user of a multi-user product. Each run carries a `Scope` (opaque tenant/user/session ids
   from the implementor; a private throwaway scope when omitted), and long-term memory
@@ -186,7 +187,12 @@ Implemented so far (Java):
     per scope and never shown to the model, paths confined to the base URL, read-only unless a
     connection allows writes, optional path allow-lists, JSON Pointer `select`;
   - `SpreadsheetTools` (Apache POI) — `spreadsheet_create`/`read`/`update`, with every formula
-    evaluated before saving so errors reach the model, not the user;
+    evaluated before saving so errors reach the model, not the user, and column/bar/line/pie charts;
+  - `DocumentTools.create` and `PresentationTools` — `document_create` (Markdown to Word or PDF)
+    and `presentation_create` (PowerPoint decks with speaker notes);
+  - `EmailTools` and `CalendarTools` — `email_send`/`draft`/`search`/`read` and
+    `calendar_list_events`/`create_event`/`find_free_time` over implementor-supplied
+    `EmailService`/`CalendarService` interfaces (no provider implementations bundled);
   - `McpClient` — any MCP server's tools (stdio or Streamable HTTP), so tools can be written in any
     language.
   `ToolSchemas`/`ToolArguments` help implementors write their own tools the same way.

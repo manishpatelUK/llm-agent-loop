@@ -41,6 +41,9 @@ import java.util.function.Consumer;
  * @param onResult        required — called once with the final {@link AgentLoopResult}
  * @param onError         required — called once if the run fails
  * @param onMessage       optional status-update callback; defaults to a no-op
+ * @param answerStream    optional; receives the answer as it's written, for showing it to the user
+ *                        in real time — see {@link AnswerStream}. Providers without native streaming
+ *                        deliver each step's text in one piece.
  * @param maxCostUsdCents optional cost bound, in USD cents, on top of {@link AgentProfile#maxSteps()}.
  *                        {@code null} (the default) means unbounded — current no-cost-tracking
  *                        behavior. When set, cost is checked after each step completes (not mid-step,
@@ -71,6 +74,7 @@ public record LoopRequest(
         Consumer<AgentLoopResult> onResult,
         Consumer<Throwable> onError,
         Consumer<AgentMessage> onMessage,
+        AnswerStream answerStream,
         Integer maxCostUsdCents,
         Duration maxDuration,
         UnregisteredToolHandler onUnregisteredTool,

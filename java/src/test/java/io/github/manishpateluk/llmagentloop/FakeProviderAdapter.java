@@ -13,7 +13,7 @@ import java.util.function.Function;
  * caller-supplied function. Fills in a placeholder {@code usage} when the canned response didn't
  * set one, since {@code LlmRouter}'s own core requires every adapter response to carry one.
  */
-final class FakeProviderAdapter implements ProviderAdapter {
+class FakeProviderAdapter implements ProviderAdapter {
 
     private static final Usage PLACEHOLDER_USAGE = Usage.builder().inputTokens(1).outputTokens(1).build();
 

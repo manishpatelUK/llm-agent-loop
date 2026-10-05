@@ -2,6 +2,7 @@ package io.github.manishpateluk.llmagentloop;
 
 import io.github.manishpateluk.llmrouter.LlmRouter;
 import io.github.manishpateluk.llmrouter.RequestInterceptor;
+import io.github.manishpateluk.llmrouter.StreamListener;
 import io.github.manishpateluk.llmrouter.config.Feature;
 import io.github.manishpateluk.llmrouter.config.RouterConfig;
 import io.github.manishpateluk.llmrouter.model.Attachment;
@@ -100,9 +101,12 @@ public final class AgentLoop {
     /** Lenient: structured output carries fields the records don't (e.g. a plan's {@code summary}), and models add extras. */
     private static final JsonMapper JSON = JsonMapper.builder().disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).build();
 
-    /** Turns end without calling any tool at all still get a final answer, rather than failing the run. */
-    private static final String NO_TOOL_CALL_FALLBACK_NOTE =
-            "Model responded without calling a tool; treating its response as the final answer.";
+    /**
+     * Added to the system instructions of every working step: the final answer is plain text, so
+     * it can stream to the user as it's written. ({@code report_complete} is still accepted.)
+     */
+    static final String FINAL_ANSWER_GUIDANCE = "Use the available tools to do the work. When you have finished, "
+            + "reply with your final answer in plain text, addressed to the user, without calling a tool.";
 
     /** How many memories the loop recalls into each step's context, unprompted. */
     private static final int AUTO_RECALL_LIMIT = 5;
@@ -415,6 +419,9 @@ public final class AgentLoop {
         private final ScopedWorkspace scopedWorkspace;
         private final RouterConfig routerConfig;
         private final RouterConfig toolsRequiredConfig;
+        private final AnswerStream answerStream;
+        /** Whether text was streamed to {@link #answerStream} during the current model call. */
+        private boolean streamedThisCall;
         private final List<StepRecord> steps = new ArrayList<>();
         private final Instant startedAt = Instant.now();
 
@@ -450,6 +457,7 @@ public final class AgentLoop {
             this.scopedWorkspace = settings.workspace().scopedTo(scope.atLevel(settings.workspaceLevel()), settings.workspaceLimits());
             this.routerConfig = request.routerConfig() != null ? request.routerConfig() : profile.routerConfig();
             this.toolsRequiredConfig = RouterConfigs.requiring(routerConfig, Feature.TOOLS);
+            this.answerStream = request.answerStream();
         }
 
         // ---- RunHandle ----------------------------------------------------------------------
@@ -514,7 +522,7 @@ public final class AgentLoop {
                     return;
                 }
 
-                String systemInstructions = profile.toSystemInstructionsFragment();
+                String systemInstructions = profile.toSystemInstructionsFragment() + "\n\n" + FINAL_ANSWER_GUIDANCE;
                 List<Message> history = new ArrayList<>();
 
                 boolean recursive = switch (profile.planMode()) {
@@ -525,7 +533,7 @@ public final class AgentLoop {
                 };
 
                 StepOutcome outcome = recursive
-                        ? runGoalDirected(request.prompt(), systemInstructions, history, 0, true)
+                        ? runGoalDirected(request.prompt(), systemInstructions, history, 0, true, true)
                         : executePlan(generatePlan(systemInstructions, history), systemInstructions, history, 0);
 
                 Response finalResponse = outcome.response().toBuilder().content(outcome.finalAnswer()).build();
@@ -614,7 +622,7 @@ public final class AgentLoop {
             Request req = request(request.prompt(), profile.toSystemInstructionsFragment(), List.of())
                     .config(routerConfig)
                     .build();
-            Response response = call(0, req);
+            Response response = call(0, req, true);
             recordStep(0, StepAction.COMPLETE, request.prompt(), null, null, response.getContent(), response);
             complete(response, TerminationReason.COMPLETED);
         }
@@ -668,9 +676,12 @@ public final class AgentLoop {
         private StepOutcome executePlan(Plan plan, String systemInstructions, List<Message> history, int thread) {
             history.add(Message.user("Overall goal: " + request.prompt()));
             StepOutcome last = null;
-            for (PlanStep planStep : plan.steps()) {
+            List<PlanStep> planSteps = plan.steps();
+            for (int i = 0; i < planSteps.size(); i++) {
+                PlanStep planStep = planSteps.get(i);
                 emit(thread, MessageType.PROGRESS, "Starting plan step: " + planStep.description());
-                last = runGoalDirected(planStep.description(), systemInstructions, history, thread, false);
+                boolean finalStep = i == planSteps.size() - 1;
+                last = runGoalDirected(planStep.description(), systemInstructions, history, thread, false, finalStep);
             }
             if (last == null) {
                 throw new IllegalStateException("Plan had no steps");
@@ -680,15 +691,22 @@ public final class AgentLoop {
 
         /**
          * The step loop for a single thread pursuing {@code goal}: call the LLM, then either run a
-         * tool (looping back), spawn a sub-task (looping back once it resolves), or complete.
+         * tool (looping back), spawn a sub-task (looping back once it resolves), or complete — with
+         * a plain-text answer or via {@code report_complete}. {@code userFacing} steps (whose answer
+         * is what the user sees) stream to the {@link AnswerStream}, if there is one; for those,
+         * {@code report_complete} isn't offered, so the answer arrives as streamable text.
          */
         private StepOutcome runGoalDirected(
-                String goal, String systemInstructions, List<Message> history, int thread, boolean allowSubTasks) {
+                String goal, String systemInstructions, List<Message> history, int thread, boolean allowSubTasks,
+                boolean userFacing) {
             emit(thread, MessageType.THINKING, "Working on: " + goal);
+            boolean streaming = userFacing && answerStream != null;
 
             while (true) {
                 List<ToolDefinition> availableTools = new ArrayList<>(tools.definitions());
-                availableTools.add(AgentLoopSchemas.REPORT_COMPLETE);
+                if (!streaming) {
+                    availableTools.add(AgentLoopSchemas.REPORT_COMPLETE);
+                }
                 if (allowSubTasks) {
                     availableTools.add(AgentLoopSchemas.SPAWN_SUB_TASK);
                 }
@@ -705,7 +723,10 @@ public final class AgentLoop {
                         .tools(List.copyOf(availableTools))
                         .config(toolsRequiredConfig)
                         .build();
-                Response response = call(thread, req);
+                Response response = call(thread, req, streaming);
+                if (streamedThisCall && !response.getToolCalls().isEmpty()) {
+                    answerStream.onDiscard(); // that text was a preamble to tool calls, not the answer
+                }
 
                 Optional<ToolCall> complete = findToolCall(response, AgentLoopSchemas.REPORT_COMPLETE_TOOL);
                 if (complete.isPresent()) {
@@ -729,7 +750,7 @@ public final class AgentLoop {
                     recordStep(thread, StepAction.SUB_TASK, goal, null, null, subGoal, response);
 
                     StepOutcome subOutcome =
-                            runGoalDirected(subGoal, systemInstructions, new ArrayList<>(history), subThread, true);
+                            runGoalDirected(subGoal, systemInstructions, new ArrayList<>(history), subThread, true, false);
 
                     history.add(Message.assistant(response.getContent(), List.of(subTask.get())));
                     history.add(Message.tool(subTask.get().getId(), subOutcome.finalAnswer()));
@@ -747,10 +768,12 @@ public final class AgentLoop {
                     continue;
                 }
 
-                // Defensive fallback: some models won't reliably call report_complete even when instructed to.
-                emit(thread, MessageType.WARNING, NO_TOOL_CALL_FALLBACK_NOTE);
-                recordStep(thread, StepAction.COMPLETE, goal, null, null, response.getContent(), response);
-                return new StepOutcome(response.getContent(), response);
+                // No tool calls: the plain-text reply is this goal's answer.
+                String answer = response.getContent() == null ? "" : response.getContent();
+                emit(thread, MessageType.INFO, "Goal complete.");
+                recordStep(thread, StepAction.COMPLETE, goal, null, null, answer, response);
+                history.add(Message.assistant("Completed: " + goal + "\n\n" + answer));
+                return new StepOutcome(answer, response);
             }
         }
 
@@ -933,10 +956,33 @@ public final class AgentLoop {
 
         /** Every LLM call the run makes goes through here, so each one counts toward {@code maxSteps} and the budgets. */
         private Response call(int thread, Request req) {
+            return call(thread, req, false);
+        }
+
+        /** {@code stream}: deliver this call's text to the {@link AnswerStream} as it's generated. */
+        private Response call(int thread, Request req, boolean stream) {
             checkCancelled();
             checkStepBudget();
             currentThread = thread;
-            Response response = router.complete(req);
+            streamedThisCall = false;
+            Response response;
+            if (stream && answerStream != null) {
+                response = router.completeStreaming(req, new StreamListener() {
+                    @Override
+                    public void onText(String delta) {
+                        streamedThisCall = true;
+                        answerStream.onText(delta);
+                    }
+
+                    @Override
+                    public void onReset() {
+                        streamedThisCall = false;
+                        answerStream.onDiscard();
+                    }
+                });
+            } else {
+                response = router.complete(req);
+            }
             checkCancelled();
             lastResponse = response;
             checkBudgets(thread, response);

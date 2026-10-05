@@ -13,6 +13,7 @@ import io.github.manishpateluk.llmrouter.provider.Provider;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -44,7 +45,37 @@ final class ScriptedModel implements AutoCloseable {
         return new LlmRouter(List.of(new FakeProviderAdapter(request -> {
             requests.add(request);
             return responder.apply(request);
-        })));
+        }) {
+            /** Streams like a real provider: the text word by word, then the full response. */
+            @Override
+            public Response sendStreaming(String model, Request adaptedRequest, Consumer<String> onText) {
+                Response response = send(model, adaptedRequest);
+                String content = response.getContent() == null ? "" : response.getContent();
+                for (String piece : content.split("(?<= )")) {
+                    if (!piece.isEmpty()) {
+                        onText.accept(piece);
+                    }
+                }
+                streamedRequests.add(adaptedRequest);
+                return response;
+            }
+        }));
+    }
+
+    /** Requests that were sent with streaming. */
+    final List<Request> streamedRequests = new CopyOnWriteArrayList<>();
+
+    /** A plain-text reply: how the model gives its final answer. */
+    static Response text(String content) {
+        return Response.builder().content(content).build();
+    }
+
+    /** Text and tool calls in one reply, e.g. "Let me look that up." plus a lookup. */
+    static Response textAndToolCall(String content, String id, String name, Map<String, Object> arguments) {
+        return Response.builder()
+                .content(content)
+                .toolCalls(List.of(ToolCall.builder().id(id).name(name).arguments(arguments).build()))
+                .build();
     }
 
     AgentLoop.Builder loop() {

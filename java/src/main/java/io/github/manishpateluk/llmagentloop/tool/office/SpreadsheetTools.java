@@ -27,6 +27,23 @@ import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.ss.util.CellReference;
 import org.apache.poi.ss.util.WorkbookUtil;
+import org.apache.poi.xddf.usermodel.chart.AxisCrosses;
+import org.apache.poi.xddf.usermodel.chart.AxisPosition;
+import org.apache.poi.xddf.usermodel.chart.BarDirection;
+import org.apache.poi.xddf.usermodel.chart.ChartTypes;
+import org.apache.poi.xddf.usermodel.chart.LegendPosition;
+import org.apache.poi.xddf.usermodel.chart.XDDFBarChartData;
+import org.apache.poi.xddf.usermodel.chart.XDDFCategoryAxis;
+import org.apache.poi.xddf.usermodel.chart.XDDFChartData;
+import org.apache.poi.xddf.usermodel.chart.XDDFDataSource;
+import org.apache.poi.xddf.usermodel.chart.XDDFDataSourcesFactory;
+import org.apache.poi.xddf.usermodel.chart.XDDFLineChartData;
+import org.apache.poi.xddf.usermodel.chart.XDDFNumericalDataSource;
+import org.apache.poi.xddf.usermodel.chart.XDDFValueAxis;
+import org.apache.poi.xssf.usermodel.XSSFChart;
+import org.apache.poi.xssf.usermodel.XSSFClientAnchor;
+import org.apache.poi.xssf.usermodel.XSSFDrawing;
+import org.apache.poi.xssf.usermodel.XSSFSheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
 import java.io.ByteArrayInputStream;
@@ -69,6 +86,20 @@ public final class SpreadsheetTools {
     private static final Pattern PLAIN_NUMBER = Pattern.compile("-?(0|[1-9]\\d*)(\\.\\d+)?");
     private static final Pattern ISO_DATE = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
 
+    static final List<String> CHART_TYPES = List.of("bar", "column", "line", "pie");
+    private static final int MAX_CHARTS_PER_CALL = 20;
+
+    private static final Map<String, Object> CHART_SCHEMA = ToolSchemas.object(List.of("type", "categories", "series"),
+            "type", ToolSchemas.stringEnum("Chart type: column (vertical bars), bar (horizontal), line, or pie.", CHART_TYPES),
+            "title", ToolSchemas.string("Chart title."),
+            "categories", ToolSchemas.string("Cell range of the category labels, e.g. \"A2:A13\" (or \"Data!A2:A13\" for another sheet)."),
+            "series", ToolSchemas.array("One or more data series (a pie uses the first only).", ToolSchemas.object(List.of("values"),
+                    "name", ToolSchemas.string("Series name shown in the legend."),
+                    "values", ToolSchemas.string("Cell range of the numbers, e.g. \"B2:B13\"."))),
+            "anchor", ToolSchemas.string("Top-left cell to place the chart at, e.g. \"E2\". Defaults to the right of the data."),
+            "width", ToolSchemas.integer("Width in columns. Defaults to 8."),
+            "height", ToolSchemas.integer("Height in rows. Defaults to 16."));
+
     private static final String CELL_CONVENTIONS = "Cell values: numbers as numbers (no currency symbols or "
             + "thousands separators — apply a number format instead); text starting with '=' is a formula, e.g. "
             + "\"=SUM(B2:B10)\"; dates as \"YYYY-MM-DD\"; true/false; null for empty; prefix with ' to force text, "
@@ -94,7 +125,8 @@ public final class SpreadsheetTools {
                 "header", ToolSchemas.bool("Style the first row as a bold, shaded header and freeze it. Defaults to true."),
                 "column_widths", ToolSchemas.array("Column widths in characters, left to right.",
                         Map.of("type", "integer")),
-                "number_formats", ToolSchemas.array("Number formats for columns (data rows only).", numberFormat));
+                "number_formats", ToolSchemas.array("Number formats for columns (data rows only).", numberFormat),
+                "charts", ToolSchemas.array("Charts to add to this sheet.", CHART_SCHEMA));
         return new RegisteredTool(
                 ToolDefinition.builder()
                         .name(CREATE)
@@ -117,6 +149,7 @@ public final class SpreadsheetTools {
         try (XSSFWorkbook workbook = new XSSFWorkbook()) {
             Styles styles = new Styles(workbook);
             int cells = 0;
+            int charts = 0;
             for (Map<String, Object> spec : sheets) {
                 String name = sheetName(ToolArguments.requireString(spec, "name"));
                 if (workbook.getSheet(name) != null) {
@@ -141,6 +174,7 @@ public final class SpreadsheetTools {
                 }
                 applyNumberFormats(sheet, maps(spec.get("number_formats"), "number_formats"), header ? 1 : 0, styles);
                 applyWidths(sheet, spec.get("column_widths"), rows);
+                charts += addCharts(workbook, (XSSFSheet) sheet, maps(spec.get("charts"), "charts of sheet '" + name + "'"));
             }
             Evaluation evaluation = evaluate(workbook);
             WorkspaceFile saved = save(context, path, workbook);
@@ -150,6 +184,9 @@ public final class SpreadsheetTools {
                 summaries.add("'" + sheet.getSheetName() + "' " + (sheet.getLastRowNum() + 1) + " rows");
             }
             out.append(String.join(", ", summaries)).append('.');
+            if (charts > 0) {
+                out.append(' ').append(charts).append(" chart(s) added.");
+            }
             return out.append(evaluation.describe()).toString();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -260,7 +297,8 @@ public final class SpreadsheetTools {
                                 "sheet", ToolSchemas.string("Sheet name."),
                                 "cells", ToolSchemas.array("Cells to set.", cellUpdate),
                                 "append_rows", ToolSchemas.array("Rows to add after the last row.",
-                                        ToolSchemas.stringArray("One row's cell values."))))
+                                        ToolSchemas.stringArray("One row's cell values.")),
+                                "charts", ToolSchemas.array("Charts to add to the sheet.", CHART_SCHEMA)))
                         .build(),
                 SpreadsheetTools::update);
     }
@@ -269,8 +307,9 @@ public final class SpreadsheetTools {
         String path = ToolArguments.requireString(args, "path");
         List<Map<String, Object>> updates = maps(args.get("cells"), "cells");
         List<List<Object>> appended = rows(args.get("append_rows"), "append_rows");
-        if (updates.isEmpty() && appended.isEmpty()) {
-            throw new ToolInputException("Nothing to do: give 'cells' and/or 'append_rows'");
+        List<Map<String, Object>> chartSpecs = maps(args.get("charts"), "charts");
+        if (updates.isEmpty() && appended.isEmpty() && chartSpecs.isEmpty()) {
+            throw new ToolInputException("Nothing to do: give 'cells', 'append_rows' and/or 'charts'");
         }
         if (updates.size() + appended.stream().mapToInt(List::size).sum() > MAX_CELLS_PER_CALL) {
             throw new ToolInputException("Too many cells in one call (limit " + MAX_CELLS_PER_CALL + ")");
@@ -290,6 +329,7 @@ public final class SpreadsheetTools {
             }
             int start = sheet.getPhysicalNumberOfRows() == 0 ? 0 : sheet.getLastRowNum() + 1;
             writeRows(sheet, start, appended, styles);
+            int charts = addCharts((XSSFWorkbook) workbook, (XSSFSheet) sheet, chartSpecs);
 
             Evaluation evaluation = evaluate(workbook);
             String savedPath = path.toLowerCase(Locale.ROOT).endsWith(".xls") ? path + "x" : path;
@@ -301,6 +341,9 @@ public final class SpreadsheetTools {
             }
             if (!appended.isEmpty()) {
                 done.add(appended.size() + " row(s) appended at row " + (start + 1));
+            }
+            if (charts > 0) {
+                done.add(charts + " chart(s) added");
             }
             out.append(String.join(", ", done)).append(" on '").append(sheet.getSheetName()).append("'.");
             if (!saved.path().equals(xlsxPathOrSame(path))) {
@@ -437,6 +480,132 @@ public final class SpreadsheetTools {
                     }
                 }
             }
+        }
+    }
+
+    /** Adds each chart spec to {@code sheet}; returns how many were added. */
+    private static int addCharts(XSSFWorkbook workbook, XSSFSheet sheet, List<Map<String, Object>> specs) {
+        if (specs.size() > MAX_CHARTS_PER_CALL) {
+            throw new ToolInputException("At most " + MAX_CHARTS_PER_CALL + " charts per call");
+        }
+        int index = 0;
+        for (Map<String, Object> spec : specs) {
+            index++;
+            String label = "Chart " + index;
+            String type = ToolArguments.requireString(spec, "type").toLowerCase(Locale.ROOT);
+            if (!CHART_TYPES.contains(type)) {
+                throw new ToolInputException(label + ": type must be one of " + CHART_TYPES);
+            }
+            List<Map<String, Object>> series = maps(spec.get("series"), "series");
+            if (series.isEmpty()) {
+                throw new ToolInputException(label + ": at least one series is required");
+            }
+            ChartRange categories = range(workbook, sheet, ToolArguments.requireString(spec, "categories"), label);
+
+            int width = ToolArguments.optionalInt(spec, "width", 8, 2, 50);
+            int height = ToolArguments.optionalInt(spec, "height", 16, 4, 200);
+            String anchorCell = ToolArguments.optionalString(spec, "anchor");
+            int col;
+            int row;
+            if (anchorCell != null && !anchorCell.isBlank()) {
+                CellReference ref = reference(anchorCell);
+                col = ref.getCol();
+                row = ref.getRow();
+            } else {
+                int lastCol = 0;
+                for (Row r : sheet) {
+                    lastCol = Math.max(lastCol, r.getLastCellNum());
+                }
+                col = lastCol + 1;
+                row = (index - 1) * (height + 1);
+            }
+            XSSFDrawing drawing = sheet.createDrawingPatriarch();
+            XSSFClientAnchor anchor = drawing.createAnchor(0, 0, 0, 0, col, row, col + width, row + height);
+            XSSFChart chart = drawing.createChart(anchor);
+            String title = ToolArguments.optionalString(spec, "title");
+            if (title != null && !title.isBlank()) {
+                chart.setTitleText(title);
+                chart.setTitleOverlay(false);
+            }
+            chart.getOrAddLegend().setPosition(LegendPosition.BOTTOM);
+
+            XDDFDataSource<?> categoryData = categories.categories();
+            XDDFChartData data;
+            if (type.equals("pie")) {
+                data = chart.createData(ChartTypes.PIE, null, null);
+                data.setVaryColors(true);
+            } else {
+                XDDFCategoryAxis bottom = chart.createCategoryAxis(AxisPosition.BOTTOM);
+                XDDFValueAxis left = chart.createValueAxis(AxisPosition.LEFT);
+                left.setCrosses(AxisCrosses.AUTO_ZERO);
+                if (type.equals("line")) {
+                    data = chart.createData(ChartTypes.LINE, bottom, left);
+                } else {
+                    data = chart.createData(ChartTypes.BAR, bottom, left);
+                    ((XDDFBarChartData) data).setBarDirection(type.equals("bar") ? BarDirection.BAR : BarDirection.COL);
+                }
+            }
+            List<Map<String, Object>> plotted = type.equals("pie") ? series.subList(0, 1) : series;
+            for (Map<String, Object> seriesSpec : plotted) {
+                ChartRange values = range(workbook, sheet, ToolArguments.requireString(seriesSpec, "values"), label);
+                XDDFChartData.Series added = data.addSeries(categoryData, values.numbers());
+                String name = ToolArguments.optionalString(seriesSpec, "name");
+                if (name != null && !name.isBlank()) {
+                    added.setTitle(name, null);
+                }
+                if (data instanceof XDDFLineChartData && added instanceof XDDFLineChartData.Series line) {
+                    line.setSmooth(false);
+                }
+            }
+            chart.plot(data);
+        }
+        return specs.size();
+    }
+
+    /** A cell range for chart data, optionally on another sheet ({@code "Data!B2:B13"}). */
+    private record ChartRange(XSSFSheet sheet, CellRangeAddress range) {
+        XDDFDataSource<?> categories() {
+            boolean numeric = true;
+            for (int r = range.getFirstRow(); r <= range.getLastRow() && numeric; r++) {
+                for (int c = range.getFirstColumn(); c <= range.getLastColumn(); c++) {
+                    Row row = sheet.getRow(r);
+                    Cell cell = row == null ? null : row.getCell(c);
+                    if (cell != null && cell.getCellType() != CellType.NUMERIC && cell.getCellType() != CellType.BLANK) {
+                        numeric = false;
+                        break;
+                    }
+                }
+            }
+            return numeric
+                    ? XDDFDataSourcesFactory.fromNumericCellRange(sheet, range)
+                    : XDDFDataSourcesFactory.fromStringCellRange(sheet, range);
+        }
+
+        XDDFNumericalDataSource<Double> numbers() {
+            return XDDFDataSourcesFactory.fromNumericCellRange(sheet, range);
+        }
+    }
+
+    private static ChartRange range(XSSFWorkbook workbook, XSSFSheet current, String text, String label) {
+        String spec = text.strip();
+        XSSFSheet target = current;
+        int bang = spec.lastIndexOf('!');
+        if (bang > 0) {
+            String sheetName = spec.substring(0, bang).replaceAll("^'|'$", "");
+            target = workbook.getSheet(sheetName);
+            if (target == null) {
+                throw new ToolInputException(label + ": no sheet called '" + sheetName + "'");
+            }
+            spec = spec.substring(bang + 1);
+        }
+        String upper = spec.toUpperCase(Locale.ROOT).replace("$", "");
+        if (!upper.matches("[A-Z]{1,3}[1-9]\\d{0,6}(:[A-Z]{1,3}[1-9]\\d{0,6})?")) {
+            throw new ToolInputException(label + ": '" + text + "' isn't a cell range like \"B2:B13\"");
+        }
+        try {
+            return new ChartRange(target, CellRangeAddress.valueOf(upper));
+        } catch (RuntimeException e) {
+            throw new ToolInputException(label + ": '" + text + "' isn't a cell range like \"B2:B13\"");
         }
     }
 
