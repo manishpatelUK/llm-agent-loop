@@ -9,7 +9,7 @@ import java.util.Map;
  * <p>Throw {@link ToolInputException} for a problem the model can fix (a bad argument, a missing
  * file) — its message goes back to the model as the result. Any other exception ends the run via
  * {@code onError}. Tools that don't need the context can be registered with
- * {@link ToolRegistry#register(com.manishpateluk.llmrouter.model.ToolDefinition, java.util.function.Function)}.
+ * {@link ToolRegistry#register(io.github.manishpateluk.llmrouter.model.ToolDefinition, java.util.function.Function)}.
  */
 @FunctionalInterface
 public interface ToolHandler {

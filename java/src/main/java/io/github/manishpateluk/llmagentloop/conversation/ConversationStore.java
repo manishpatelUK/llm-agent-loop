@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop.conversation;
 
-import com.manishpateluk.llmrouter.model.Message;
+import io.github.manishpateluk.llmrouter.model.Message;
 import io.github.manishpateluk.llmagentloop.Scope;
 
 import java.util.List;

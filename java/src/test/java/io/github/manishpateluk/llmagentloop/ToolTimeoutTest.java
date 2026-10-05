@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.model.ToolDefinition;
+import io.github.manishpateluk.llmrouter.model.ToolDefinition;
 import io.github.manishpateluk.llmagentloop.execution.TerminationReason;
 import io.github.manishpateluk.llmagentloop.tool.RegisteredTool;
 import io.github.manishpateluk.llmagentloop.tool.ToolHandler;

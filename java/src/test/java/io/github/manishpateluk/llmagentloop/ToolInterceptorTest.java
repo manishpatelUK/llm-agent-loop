@@ -1,7 +1,7 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.model.ToolCall;
-import com.manishpateluk.llmrouter.model.ToolDefinition;
+import io.github.manishpateluk.llmrouter.model.ToolCall;
+import io.github.manishpateluk.llmrouter.model.ToolDefinition;
 import io.github.manishpateluk.llmagentloop.tool.ToolContext;
 import io.github.manishpateluk.llmagentloop.tool.ToolDecision;
 import io.github.manishpateluk.llmagentloop.tool.ToolInterceptor;

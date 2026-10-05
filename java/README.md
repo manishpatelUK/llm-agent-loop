@@ -223,7 +223,7 @@ The whole profile is serialized to JSON and folded into the system instructions 
 
 ```java
 import io.github.manishpateluk.llmagentloop.tool.ToolRegistry;
-import com.manishpateluk.llmrouter.model.ToolDefinition;
+import io.github.manishpateluk.llmrouter.model.ToolDefinition;
 import java.util.Map;
 
 ToolRegistry tools = new ToolRegistry();

@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop.tool;
 
-import com.manishpateluk.llmrouter.model.ToolCall;
+import io.github.manishpateluk.llmrouter.model.ToolCall;
 
 /**
  * Sees every tool call an agent makes, before and after it runs — the one place to add policy

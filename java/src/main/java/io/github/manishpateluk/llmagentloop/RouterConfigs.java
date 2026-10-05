@@ -1,7 +1,7 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.config.Feature;
-import com.manishpateluk.llmrouter.config.RouterConfig;
+import io.github.manishpateluk.llmrouter.config.Feature;
+import io.github.manishpateluk.llmrouter.config.RouterConfig;
 
 import java.util.EnumSet;
 import java.util.Set;

@@ -1,7 +1,7 @@
 package io.github.manishpateluk.llmagentloop;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.manishpateluk.llmrouter.config.RouterConfig;
+import io.github.manishpateluk.llmrouter.config.RouterConfig;
 import lombok.Builder;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.json.JsonMapper;

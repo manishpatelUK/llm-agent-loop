@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop.tool.office;
 
-import com.manishpateluk.llmrouter.model.ToolDefinition;
+import io.github.manishpateluk.llmrouter.model.ToolDefinition;
 import io.github.manishpateluk.llmagentloop.tool.RegisteredTool;
 import io.github.manishpateluk.llmagentloop.tool.ToolArguments;
 import io.github.manishpateluk.llmagentloop.tool.ToolContext;

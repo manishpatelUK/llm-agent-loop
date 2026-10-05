@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop.tool.builtin;
 
-import com.manishpateluk.llmrouter.model.ToolDefinition;
+import io.github.manishpateluk.llmrouter.model.ToolDefinition;
 import io.github.manishpateluk.llmagentloop.MessageType;
 import io.github.manishpateluk.llmagentloop.tool.RegisteredTool;
 import io.github.manishpateluk.llmagentloop.tool.ToolSchemas;

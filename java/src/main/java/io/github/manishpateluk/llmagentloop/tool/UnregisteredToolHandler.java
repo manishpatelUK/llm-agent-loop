@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop.tool;
 
-import com.manishpateluk.llmrouter.model.ToolCall;
+import io.github.manishpateluk.llmrouter.model.ToolCall;
 
 import java.util.Optional;
 

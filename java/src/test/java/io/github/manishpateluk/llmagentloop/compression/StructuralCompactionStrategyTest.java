@@ -1,7 +1,7 @@
 package io.github.manishpateluk.llmagentloop.compression;
 
-import com.manishpateluk.llmrouter.model.Message;
-import com.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.model.Message;
+import io.github.manishpateluk.llmrouter.model.Request;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

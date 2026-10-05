@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.model.Response;
+import io.github.manishpateluk.llmrouter.model.Response;
 import io.github.manishpateluk.llmagentloop.execution.Execution;
 
 import java.util.List;

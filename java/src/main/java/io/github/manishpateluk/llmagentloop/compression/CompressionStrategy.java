@@ -1,7 +1,7 @@
 package io.github.manishpateluk.llmagentloop.compression;
 
-import com.manishpateluk.llmrouter.LlmRouter;
-import com.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.LlmRouter;
+import io.github.manishpateluk.llmrouter.model.Request;
 
 /**
  * A single compression technique. Implementations make a best-effort attempt to reduce the

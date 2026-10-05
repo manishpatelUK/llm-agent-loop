@@ -1,14 +1,14 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.LlmRouter;
-import com.manishpateluk.llmrouter.capability.ModelCapabilityTable;
-import com.manishpateluk.llmrouter.capability.ModelEntry;
-import com.manishpateluk.llmrouter.model.Message;
-import com.manishpateluk.llmrouter.model.Request;
-import com.manishpateluk.llmrouter.model.Response;
-import com.manishpateluk.llmrouter.model.Role;
-import com.manishpateluk.llmrouter.model.ToolCall;
-import com.manishpateluk.llmrouter.provider.Provider;
+import io.github.manishpateluk.llmrouter.LlmRouter;
+import io.github.manishpateluk.llmrouter.capability.ModelCapabilityTable;
+import io.github.manishpateluk.llmrouter.capability.ModelEntry;
+import io.github.manishpateluk.llmrouter.model.Message;
+import io.github.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.model.Response;
+import io.github.manishpateluk.llmrouter.model.Role;
+import io.github.manishpateluk.llmrouter.model.ToolCall;
+import io.github.manishpateluk.llmrouter.provider.Provider;
 
 import java.util.List;
 import java.util.Map;

@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop.compression;
 
-import com.manishpateluk.llmrouter.provider.Provider;
+import io.github.manishpateluk.llmrouter.provider.Provider;
 
 /**
  * Notified whenever {@link HistoryCompressor#compress} actually does something — compresses a

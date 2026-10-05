@@ -1,12 +1,12 @@
 package io.github.manishpateluk.llmagentloop.compression;
 
-import com.manishpateluk.llmrouter.LlmRouter;
-import com.manishpateluk.llmrouter.RequestInterceptor;
-import com.manishpateluk.llmrouter.capability.ModelCapabilityTable;
-import com.manishpateluk.llmrouter.capability.ModelEntry;
-import com.manishpateluk.llmrouter.provider.Provider;
-import com.manishpateluk.llmrouter.provider.ProviderAdapter;
-import com.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.LlmRouter;
+import io.github.manishpateluk.llmrouter.RequestInterceptor;
+import io.github.manishpateluk.llmrouter.capability.ModelCapabilityTable;
+import io.github.manishpateluk.llmrouter.capability.ModelEntry;
+import io.github.manishpateluk.llmrouter.provider.Provider;
+import io.github.manishpateluk.llmrouter.provider.ProviderAdapter;
+import io.github.manishpateluk.llmrouter.model.Request;
 
 import java.util.ArrayList;
 import java.util.List;

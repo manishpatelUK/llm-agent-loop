@@ -1,8 +1,8 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.model.Message;
-import com.manishpateluk.llmrouter.model.Request;
-import com.manishpateluk.llmrouter.model.Role;
+import io.github.manishpateluk.llmrouter.model.Message;
+import io.github.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.model.Role;
 import io.github.manishpateluk.llmagentloop.conversation.InMemoryConversationStore;
 import io.github.manishpateluk.llmagentloop.workspace.InMemoryWorkspace;
 import org.junit.jupiter.api.AfterEach;
@@ -103,7 +103,7 @@ class ConversationTest {
         loop.runAndWait(request("We sell widgets", MONDAY));
         model.requests.clear();
         model.respond(request -> request.getPrompt().contains("Produce an ordered list of steps")
-                ? com.manishpateluk.llmrouter.model.Response.builder()
+                ? io.github.manishpateluk.llmrouter.model.Response.builder()
                         .content("{\"summary\":\"s\",\"steps\":[{\"description\":\"step\"}]}").build()
                 : complete("ok"));
 

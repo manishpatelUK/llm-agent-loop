@@ -1,10 +1,10 @@
 package io.github.manishpateluk.llmagentloop.compression;
 
-import com.manishpateluk.llmrouter.LlmRouter;
-import com.manishpateluk.llmrouter.model.Message;
-import com.manishpateluk.llmrouter.model.Request;
-import com.manishpateluk.llmrouter.model.Response;
-import com.manishpateluk.llmrouter.model.Role;
+import io.github.manishpateluk.llmrouter.LlmRouter;
+import io.github.manishpateluk.llmrouter.model.Message;
+import io.github.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.model.Response;
+import io.github.manishpateluk.llmrouter.model.Role;
 
 import java.util.ArrayList;
 import java.util.List;

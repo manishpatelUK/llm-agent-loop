@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop.tool;
 
-import com.manishpateluk.llmrouter.model.ToolDefinition;
+import io.github.manishpateluk.llmrouter.model.ToolDefinition;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;

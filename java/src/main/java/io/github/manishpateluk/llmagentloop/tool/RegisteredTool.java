@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop.tool;
 
-import com.manishpateluk.llmrouter.model.ToolDefinition;
+import io.github.manishpateluk.llmrouter.model.ToolDefinition;
 
 import java.time.Duration;
 import java.util.Objects;

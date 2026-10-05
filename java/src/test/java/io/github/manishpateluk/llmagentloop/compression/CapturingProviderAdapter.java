@@ -1,10 +1,10 @@
 package io.github.manishpateluk.llmagentloop.compression;
 
-import com.manishpateluk.llmrouter.model.Request;
-import com.manishpateluk.llmrouter.model.Response;
-import com.manishpateluk.llmrouter.model.Usage;
-import com.manishpateluk.llmrouter.provider.Provider;
-import com.manishpateluk.llmrouter.provider.ProviderAdapter;
+import io.github.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.model.Response;
+import io.github.manishpateluk.llmrouter.model.Usage;
+import io.github.manishpateluk.llmrouter.provider.Provider;
+import io.github.manishpateluk.llmrouter.provider.ProviderAdapter;
 
 /** A {@link ProviderAdapter} test double that records the (possibly-intercepted) request it actually receives. */
 final class CapturingProviderAdapter implements ProviderAdapter {

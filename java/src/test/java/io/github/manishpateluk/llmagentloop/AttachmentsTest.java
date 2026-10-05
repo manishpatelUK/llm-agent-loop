@@ -1,8 +1,8 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.model.Attachment;
-import com.manishpateluk.llmrouter.model.Message;
-import com.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.model.Attachment;
+import io.github.manishpateluk.llmrouter.model.Message;
+import io.github.manishpateluk.llmrouter.model.Request;
 import io.github.manishpateluk.llmagentloop.tool.ToolRegistry;
 import io.github.manishpateluk.llmagentloop.tool.builtin.WorkspaceTools;
 import io.github.manishpateluk.llmagentloop.workspace.InMemoryWorkspace;

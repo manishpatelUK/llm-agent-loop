@@ -51,9 +51,6 @@ far. Remove an item once it ships (and record it in the README's Status section)
 
 ## Known limitations
 
-- `llm-router` is moving its packages from `com.manishpateluk.llmrouter` to
-  `io.github.manishpateluk.llmrouter` (in progress there); this library's imports need updating when
-  that version is released.
 - `llm-router` drops *all* of a request's attachments when the chosen model can't take *one* of them
   (e.g. a PDF sent to a model with vision but no file input also loses the images). Attachments are
   still saved to the workspace and described to the model, so tools can recover; finer-grained

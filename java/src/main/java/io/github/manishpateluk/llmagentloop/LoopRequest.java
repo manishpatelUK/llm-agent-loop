@@ -1,7 +1,7 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.config.RouterConfig;
-import com.manishpateluk.llmrouter.model.Message;
+import io.github.manishpateluk.llmrouter.config.RouterConfig;
+import io.github.manishpateluk.llmrouter.model.Message;
 import io.github.manishpateluk.llmagentloop.tool.UnregisteredToolHandler;
 import lombok.Builder;
 

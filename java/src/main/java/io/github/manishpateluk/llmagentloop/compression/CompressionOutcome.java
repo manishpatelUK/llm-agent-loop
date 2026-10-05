@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop.compression;
 
-import com.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.model.Request;
 
 import java.util.List;
 

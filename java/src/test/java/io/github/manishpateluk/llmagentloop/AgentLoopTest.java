@@ -1,16 +1,16 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.LlmRouter;
-import com.manishpateluk.llmrouter.capability.ModelCapabilityTable;
-import com.manishpateluk.llmrouter.capability.ModelEntry;
-import com.manishpateluk.llmrouter.model.Message;
-import com.manishpateluk.llmrouter.model.Request;
-import com.manishpateluk.llmrouter.model.Response;
-import com.manishpateluk.llmrouter.model.Role;
-import com.manishpateluk.llmrouter.model.ToolCall;
-import com.manishpateluk.llmrouter.model.ToolDefinition;
-import com.manishpateluk.llmrouter.model.Usage;
-import com.manishpateluk.llmrouter.provider.Provider;
+import io.github.manishpateluk.llmrouter.LlmRouter;
+import io.github.manishpateluk.llmrouter.capability.ModelCapabilityTable;
+import io.github.manishpateluk.llmrouter.capability.ModelEntry;
+import io.github.manishpateluk.llmrouter.model.Message;
+import io.github.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.model.Response;
+import io.github.manishpateluk.llmrouter.model.Role;
+import io.github.manishpateluk.llmrouter.model.ToolCall;
+import io.github.manishpateluk.llmrouter.model.ToolDefinition;
+import io.github.manishpateluk.llmrouter.model.Usage;
+import io.github.manishpateluk.llmrouter.provider.Provider;
 import io.github.manishpateluk.llmagentloop.AgentLoopRunSupport.Capture;
 import io.github.manishpateluk.llmagentloop.compression.CompressionMethod;
 import io.github.manishpateluk.llmagentloop.compression.HistoryCompressor;
@@ -119,7 +119,7 @@ class AgentLoopTest {
                     .content("")
                     .build();
         }, registry -> registry.register(
-                com.manishpateluk.llmrouter.model.ToolDefinition.builder()
+                io.github.manishpateluk.llmrouter.model.ToolDefinition.builder()
                         .name("echo")
                         .description("Echoes text back")
                         .parameters(Map.of("type", "object"))
@@ -142,7 +142,7 @@ class AgentLoopTest {
     void multipleToolCallsInOneTurnAreCorrelatedInHistory() throws InterruptedException {
         registerModel();
         AtomicInteger calls = new AtomicInteger();
-        List<com.manishpateluk.llmrouter.model.Request> capturedRequests = new java.util.concurrent.CopyOnWriteArrayList<>();
+        List<io.github.manishpateluk.llmrouter.model.Request> capturedRequests = new java.util.concurrent.CopyOnWriteArrayList<>();
         AgentLoop loop = newLoop(List.of(), request -> {
             capturedRequests.add(request);
             if (calls.incrementAndGet() == 1) {
@@ -159,13 +159,13 @@ class AgentLoopTest {
                             .id("c").name("report_complete").arguments(Map.of("finalAnswer", "done")).build()))
                     .build();
         }, registry -> registry
-                .register(com.manishpateluk.llmrouter.model.ToolDefinition.builder()
+                .register(io.github.manishpateluk.llmrouter.model.ToolDefinition.builder()
                                 .name("echo")
                                 .description("Echoes text back")
                                 .parameters(Map.of("type", "object"))
                                 .build(),
                         args -> "echo:" + args.get("text"))
-                .register(com.manishpateluk.llmrouter.model.ToolDefinition.builder()
+                .register(io.github.manishpateluk.llmrouter.model.ToolDefinition.builder()
                                 .name("shout")
                                 .description("Shouts text back")
                                 .parameters(Map.of("type", "object"))
@@ -185,15 +185,15 @@ class AgentLoopTest {
 
         // The second call's history is where the fix matters: one correlated assistant turn
         // carrying both requested calls, followed by two tool-result turns keyed by call id.
-        List<com.manishpateluk.llmrouter.model.Message> history = capturedRequests.get(1).getHistory();
+        List<io.github.manishpateluk.llmrouter.model.Message> history = capturedRequests.get(1).getHistory();
 
-        com.manishpateluk.llmrouter.model.Message assistantTurn = history.stream()
-                .filter(m -> m.getRole() == com.manishpateluk.llmrouter.model.Role.ASSISTANT)
+        io.github.manishpateluk.llmrouter.model.Message assistantTurn = history.stream()
+                .filter(m -> m.getRole() == io.github.manishpateluk.llmrouter.model.Role.ASSISTANT)
                 .findFirst().orElseThrow();
         assertThat(assistantTurn.getToolCalls()).extracting(ToolCall::getId).containsExactly("a", "b");
 
-        List<com.manishpateluk.llmrouter.model.Message> toolResults = history.stream()
-                .filter(m -> m.getRole() == com.manishpateluk.llmrouter.model.Role.TOOL)
+        List<io.github.manishpateluk.llmrouter.model.Message> toolResults = history.stream()
+                .filter(m -> m.getRole() == io.github.manishpateluk.llmrouter.model.Role.TOOL)
                 .toList();
         assertThat(toolResults).hasSize(2);
         assertThat(toolResults.get(0).getToolCallId()).isEqualTo("a");
@@ -281,7 +281,7 @@ class AgentLoopTest {
                 .content("")
                 .toolCalls(List.of(ToolCall.builder().id("1").name("noop").arguments(Map.of()).build()))
                 .build(), registry -> registry.register(
-                com.manishpateluk.llmrouter.model.ToolDefinition.builder()
+                io.github.manishpateluk.llmrouter.model.ToolDefinition.builder()
                         .name("noop")
                         .description("Does nothing")
                         .parameters(Map.of("type", "object"))
@@ -312,7 +312,7 @@ class AgentLoopTest {
                     .toolCalls(List.of(ToolCall.builder().id("1").name("noop").arguments(Map.of()).build()))
                     .build();
         }, registry -> registry.register(
-                com.manishpateluk.llmrouter.model.ToolDefinition.builder()
+                io.github.manishpateluk.llmrouter.model.ToolDefinition.builder()
                         .name("noop")
                         .description("Does nothing")
                         .parameters(Map.of("type", "object"))
@@ -347,7 +347,7 @@ class AgentLoopTest {
                     .toolCalls(List.of(ToolCall.builder().id("1").name("noop").arguments(Map.of()).build()))
                     .build();
         }, registry -> registry.register(
-                com.manishpateluk.llmrouter.model.ToolDefinition.builder()
+                io.github.manishpateluk.llmrouter.model.ToolDefinition.builder()
                         .name("noop")
                         .description("Does nothing")
                         .parameters(Map.of("type", "object"))
@@ -541,13 +541,13 @@ class AgentLoopTest {
                 .build());
     }
 
-    private static AgentLoop newLoop(java.util.function.Function<com.manishpateluk.llmrouter.model.Request, Response> responder) {
+    private static AgentLoop newLoop(java.util.function.Function<io.github.manishpateluk.llmrouter.model.Request, Response> responder) {
         return newLoop(List.of(), responder, registry -> { });
     }
 
     private static AgentLoop newLoop(
             List<Object> unused,
-            java.util.function.Function<com.manishpateluk.llmrouter.model.Request, Response> responder,
+            java.util.function.Function<io.github.manishpateluk.llmrouter.model.Request, Response> responder,
             java.util.function.Consumer<ToolRegistry> registration) {
         LlmRouter router = new LlmRouter(List.of(new FakeProviderAdapter(responder)));
         ToolRegistry registry = new ToolRegistry();

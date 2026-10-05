@@ -1,12 +1,12 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.config.Feature;
-import com.manishpateluk.llmrouter.config.RouteEntry;
-import com.manishpateluk.llmrouter.config.RouterConfig;
-import com.manishpateluk.llmrouter.config.ThinkingLevel;
-import com.manishpateluk.llmrouter.model.Request;
-import com.manishpateluk.llmrouter.model.Response;
-import com.manishpateluk.llmrouter.provider.Provider;
+import io.github.manishpateluk.llmrouter.config.Feature;
+import io.github.manishpateluk.llmrouter.config.RouteEntry;
+import io.github.manishpateluk.llmrouter.config.RouterConfig;
+import io.github.manishpateluk.llmrouter.config.ThinkingLevel;
+import io.github.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.model.Response;
+import io.github.manishpateluk.llmrouter.provider.Provider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

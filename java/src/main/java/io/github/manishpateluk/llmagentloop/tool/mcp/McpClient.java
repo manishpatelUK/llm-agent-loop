@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop.tool.mcp;
 
-import com.manishpateluk.llmrouter.model.ToolDefinition;
+import io.github.manishpateluk.llmrouter.model.ToolDefinition;
 import io.github.manishpateluk.llmagentloop.tool.RegisteredTool;
 import io.github.manishpateluk.llmagentloop.tool.ToolInputException;
 import tools.jackson.databind.JsonNode;

@@ -1,9 +1,9 @@
 package io.github.manishpateluk.llmagentloop.compression;
 
-import com.manishpateluk.llmrouter.model.Attachment;
-import com.manishpateluk.llmrouter.model.Message;
-import com.manishpateluk.llmrouter.model.Request;
-import com.manishpateluk.llmrouter.routing.TokenEstimator;
+import io.github.manishpateluk.llmrouter.model.Attachment;
+import io.github.manishpateluk.llmrouter.model.Message;
+import io.github.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.routing.TokenEstimator;
 
 /**
  * Estimates the token footprint of a whole {@link Request} — system instructions, history,

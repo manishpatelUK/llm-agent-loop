@@ -1,12 +1,12 @@
 package io.github.manishpateluk.llmagentloop;
 
-import com.manishpateluk.llmrouter.LlmRouter;
-import com.manishpateluk.llmrouter.capability.ModelCapabilityTable;
-import com.manishpateluk.llmrouter.capability.ModelEntry;
-import com.manishpateluk.llmrouter.model.Response;
-import com.manishpateluk.llmrouter.model.ToolCall;
-import com.manishpateluk.llmrouter.model.ToolDefinition;
-import com.manishpateluk.llmrouter.provider.Provider;
+import io.github.manishpateluk.llmrouter.LlmRouter;
+import io.github.manishpateluk.llmrouter.capability.ModelCapabilityTable;
+import io.github.manishpateluk.llmrouter.capability.ModelEntry;
+import io.github.manishpateluk.llmrouter.model.Response;
+import io.github.manishpateluk.llmrouter.model.ToolCall;
+import io.github.manishpateluk.llmrouter.model.ToolDefinition;
+import io.github.manishpateluk.llmrouter.provider.Provider;
 import io.github.manishpateluk.llmagentloop.AgentLoopRunSupport.Capture;
 import io.github.manishpateluk.llmagentloop.compression.CompressionMethod;
 import io.github.manishpateluk.llmagentloop.tool.ToolRegistry;

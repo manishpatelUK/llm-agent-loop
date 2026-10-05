@@ -1,6 +1,6 @@
 package io.github.manishpateluk.llmagentloop.execution;
 
-import com.manishpateluk.llmrouter.model.Response;
+import io.github.manishpateluk.llmrouter.model.Response;
 
 import lombok.Builder;
 

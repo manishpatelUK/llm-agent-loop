@@ -1,9 +1,9 @@
 package io.github.manishpateluk.llmagentloop.agent;
 
-import com.manishpateluk.llmrouter.config.RouteEntry;
-import com.manishpateluk.llmrouter.config.RouterConfig;
-import com.manishpateluk.llmrouter.config.ThinkingLevel;
-import com.manishpateluk.llmrouter.provider.Provider;
+import io.github.manishpateluk.llmrouter.config.RouteEntry;
+import io.github.manishpateluk.llmrouter.config.RouterConfig;
+import io.github.manishpateluk.llmrouter.config.ThinkingLevel;
+import io.github.manishpateluk.llmrouter.provider.Provider;
 import io.github.manishpateluk.llmagentloop.AgentProfile;
 import io.github.manishpateluk.llmagentloop.PlanMode;
 import io.github.manishpateluk.llmagentloop.skill.Skill;
