@@ -46,6 +46,7 @@
     <jackson.version>3.2.3</jackson.version>
     <jsoup.version>1.23.2</jsoup.version>
     <poi.version>5.5.1</poi.version>
+    <pdfbox.version>3.0.8</pdfbox.version>
     <junit.version>5.11.4</junit.version>
     <assertj.version>3.26.3</assertj.version>
   </properties>
@@ -88,6 +89,13 @@
       <groupId>org.apache.poi</groupId>
       <artifactId>poi-ooxml</artifactId>
       <version>${poi.version}</version>
+    </dependency>
+
+    <dependency>
+      <!-- PDF text extraction for document_read. Apache License 2.0. -->
+      <groupId>org.apache.pdfbox</groupId>
+      <artifactId>pdfbox</artifactId>
+      <version>${pdfbox.version}</version>
     </dependency>
 
     <dependency>

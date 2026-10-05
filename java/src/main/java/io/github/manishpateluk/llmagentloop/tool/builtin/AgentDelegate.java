@@ -13,7 +13,7 @@ import io.github.manishpateluk.llmagentloop.tool.ToolInputException;
 import java.util.Objects;
 
 /**
- * Another agent that {@code delegate_to_agent} can hand work to — e.g. a cofounder agent
+ * Another agent that {@code delegate_to_agent} can hand work to — e.g. a general assistant agent
  * delegating to a legal or finance specialist. {@link #of} wraps an {@link AgentLoop} and its
  * {@link AgentProfile}; implement this directly to delegate to something else entirely (a remote
  * agent service, a human team's queue).

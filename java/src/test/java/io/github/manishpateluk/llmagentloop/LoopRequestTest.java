@@ -3,7 +3,6 @@ package io.github.manishpateluk.llmagentloop;
 import io.github.manishpateluk.llmagentloop.tool.UnregisteredToolHandler;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
@@ -36,10 +35,26 @@ class LoopRequestTest {
     }
 
     @Test
-    void filesDefaultToEmptyList() {
+    void attachmentsDefaultToEmptyAndAreSavedToTheWorkspaceUnlessTurnedOff() {
         LoopRequest request = LoopRequest.builder().prompt("hi").onResult(onResult).onError(onError).build();
 
-        assertThat(request.files()).isEmpty();
+        assertThat(request.attachments()).isEmpty();
+        assertThat(request.saveAttachments()).isTrue();
+        assertThat(request.history()).isNull();
+        assertThat(request.routerConfig()).isNull();
+    }
+
+    @Test
+    void inputFilesGuessTheirMediaTypeAndCopyTheirBytes() {
+        byte[] bytes = {1, 2, 3};
+        InputFile file = InputFile.of("photo.PNG", bytes);
+        bytes[0] = 9;
+
+        assertThat(file.mediaType()).isEqualTo("image/png");
+        assertThat(file.data()).containsExactly(1, 2, 3);
+        assertThat(InputFile.of("data.csv", new java.io.ByteArrayInputStream("a,b".getBytes())).mediaType()).isEqualTo("text/csv");
+        assertThat(InputFile.of("mystery.bin", bytes).mediaType()).isEqualTo("application/octet-stream");
+        assertThatThrownBy(() -> InputFile.of(" ", bytes)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -66,18 +81,20 @@ class LoopRequestTest {
 
     @Test
     void builderCarriesThroughSuppliedOptionalValues() {
-        File file = new File("notes.txt");
+        InputFile file = InputFile.of("notes.txt", "hello".getBytes());
         Consumer<AgentMessage> onMessage = message -> { };
 
         LoopRequest request = LoopRequest.builder()
                 .prompt("hi")
-                .files(List.of(file))
+                .attachments(List.of(file))
+                .saveAttachments(false)
                 .onResult(onResult)
                 .onError(onError)
                 .onMessage(onMessage)
                 .build();
 
-        assertThat(request.files()).containsExactly(file);
+        assertThat(request.attachments()).containsExactly(file);
+        assertThat(request.saveAttachments()).isFalse();
         assertThat(request.onMessage()).isSameAs(onMessage);
     }
 

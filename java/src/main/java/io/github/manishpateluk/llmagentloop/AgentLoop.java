@@ -10,14 +10,15 @@ import com.manishpateluk.llmrouter.model.Request;
 import com.manishpateluk.llmrouter.model.Response;
 import com.manishpateluk.llmrouter.model.ToolCall;
 import com.manishpateluk.llmrouter.model.ToolDefinition;
-import com.manishpateluk.llmrouter.provider.ProviderAdapter;
 import com.manishpateluk.llmrouter.provider.Provider;
+import com.manishpateluk.llmrouter.provider.ProviderAdapter;
 import io.github.manishpateluk.llmagentloop.compression.CompressionAttempt;
 import io.github.manishpateluk.llmagentloop.compression.CompressionExhaustedException;
 import io.github.manishpateluk.llmagentloop.compression.CompressionListener;
 import io.github.manishpateluk.llmagentloop.compression.CompressionMethod;
 import io.github.manishpateluk.llmagentloop.compression.CompressionOutcome;
 import io.github.manishpateluk.llmagentloop.compression.HistoryCompressor;
+import io.github.manishpateluk.llmagentloop.conversation.ConversationStore;
 import io.github.manishpateluk.llmagentloop.execution.Execution;
 import io.github.manishpateluk.llmagentloop.execution.StepAction;
 import io.github.manishpateluk.llmagentloop.execution.StepRecord;
@@ -25,63 +26,62 @@ import io.github.manishpateluk.llmagentloop.execution.TerminationReason;
 import io.github.manishpateluk.llmagentloop.memory.MemoryEntry;
 import io.github.manishpateluk.llmagentloop.memory.MemoryStore;
 import io.github.manishpateluk.llmagentloop.memory.ScopedMemory;
-import io.github.manishpateluk.llmagentloop.tool.ToolContext;
-import io.github.manishpateluk.llmagentloop.tool.ToolInputException;
-import io.github.manishpateluk.llmagentloop.workspace.ScopedWorkspace;
-import io.github.manishpateluk.llmagentloop.workspace.Workspace;
-import io.github.manishpateluk.llmagentloop.workspace.WorkspaceLimits;
 import io.github.manishpateluk.llmagentloop.plan.Plan;
 import io.github.manishpateluk.llmagentloop.plan.PlanStep;
 import io.github.manishpateluk.llmagentloop.tool.RegisteredTool;
+import io.github.manishpateluk.llmagentloop.tool.ToolContext;
+import io.github.manishpateluk.llmagentloop.tool.ToolDecision;
+import io.github.manishpateluk.llmagentloop.tool.ToolInputException;
+import io.github.manishpateluk.llmagentloop.tool.ToolInterceptor;
 import io.github.manishpateluk.llmagentloop.tool.ToolRegistry;
-
+import io.github.manishpateluk.llmagentloop.workspace.MediaTypes;
+import io.github.manishpateluk.llmagentloop.workspace.ScopedWorkspace;
+import io.github.manishpateluk.llmagentloop.workspace.Workspace;
+import io.github.manishpateluk.llmagentloop.workspace.WorkspaceException;
+import io.github.manishpateluk.llmagentloop.workspace.WorkspaceFile;
+import io.github.manishpateluk.llmagentloop.workspace.WorkspaceLimits;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * The library's main entry point: turns a single {@link LoopRequest} into a completed task by
  * recursively calling an LLM (via the {@link LlmRouter} supplied at construction) — running
  * tools, checking for completion, and possibly branching into sub-tasks — until the goal is
- * satisfied or {@link AgentProfile#maxSteps()} is exceeded — every LLM call the run makes (the
- * {@code AUTO} plan check and plan generation included) counts as a step. Reporting is entirely through
- * callbacks; usage is always asynchronous, there is no blocking call.
+ * satisfied or {@link AgentProfile#maxSteps()} is exceeded; every LLM call the run makes (the
+ * {@code AUTO} plan check and plan generation included) counts as a step. {@link #run} is
+ * asynchronous and returns a {@link RunHandle} for cancelling; {@link #runAndWait} blocks the
+ * calling thread instead.
  *
  * <p><b>{@link #builder()} is the recommended way to construct one</b> — it assembles a router
  * for you (with automatic history compression on by default, via
  * {@code HistoryCompressor.newSelfCompressingRouter}) from either explicit provider adapters or
- * environment-auto-detected credentials. The constructors below remain for callers that already
- * have a fully-assembled {@link LlmRouter} — e.g. one with its own {@code RequestInterceptor} for
- * something other than compression — and want no factory logic in the way.
- *
- * <p>Every overload of {@link #run} funnels into {@link #run(LoopRequest)}; the shorter overloads
- * just build a {@link LoopRequest} with sensible defaults (no {@link AgentProfile}, no files, a
- * no-op status-message callback).
+ * environment-auto-detected credentials, and configures memory, workspace, chat history, tool
+ * interceptors and tool timeouts. The constructors remain for callers that already have a
+ * fully-assembled {@link LlmRouter} and want nothing else.
  *
  * <p>{@link LoopRequest#maxCostUsdCents()} and {@link LoopRequest#maxDuration()} are optional,
  * approximate bounds on top of {@link AgentProfile#maxSteps()}: checked after each step completes
  * (not mid-step), so once either is met or exceeded the run stops and returns whatever answer it
- * has so far — via {@link LoopRequest#onResult()}, not {@link LoopRequest#onError()} — rather than
- * continuing to the next step. {@code Execution.terminationReason()} on the result says whether
- * that happened.
+ * has so far — via {@link LoopRequest#onResult()}, not {@link LoopRequest#onError()}. Cancelling
+ * works the same way. {@code Execution.terminationReason()} on the result says which happened.
  *
  * <p>When the router compresses history (see {@code HistoryCompressor.newSelfCompressingRouter}),
  * each compression is reported on this run's {@code onMessage} and recorded in its
@@ -91,8 +91,8 @@ import java.util.function.Consumer;
  * {@link LoopRequest#onUnregisteredTool()}; if that doesn't resolve it, the run ends via
  * {@link LoopRequest#onError()} with an {@link UnregisteredToolException}.
  *
- * <p>Known simplification in this pass, called out rather than silently glossed over: branches
- * (sub-tasks, and a {@code Plan}'s parallel-grouped steps) execute sequentially, not concurrently.
+ * <p>Known simplification, called out rather than silently glossed over: branches (sub-tasks, and
+ * a {@code Plan}'s parallel-grouped steps) execute sequentially, not concurrently.
  */
 public final class AgentLoop {
 
@@ -107,17 +107,42 @@ public final class AgentLoop {
     /** How many memories the loop recalls into each step's context, unprompted. */
     private static final int AUTO_RECALL_LIMIT = 5;
 
-    /** Every call that offers tools — including the loop's own {@code report_complete} — only routes to models that can call them. */
-    private static final RouterConfig TOOLS_REQUIRED =
-            RouterConfig.builder().requiredFeatures(Set.of(Feature.TOOLS)).build();
+    /** The default for {@link Builder#toolTimeout}. */
+    public static final Duration DEFAULT_TOOL_TIMEOUT = Duration.ofMinutes(5);
+
+    /** Where attachments are saved in the workspace. */
+    public static final String UPLOADS_FOLDER = "uploads/";
+
+    /** Text attachments up to this many characters are included in the model's context directly. */
+    static final int MAX_INLINE_ATTACHMENT_CHARS = 50_000;
+
+    /** At most this many workspace files shown to the model ({@code ToolContext.showToModel}) at once; the oldest drops off. */
+    static final int MAX_SHOWN_FILES = 10;
+
+    /** Everything about a loop except its router and tools — shared by {@link #withTools}. */
+    private record Settings(
+            MemoryStore memory, ScopeLevel memoryLevel, Workspace workspace, ScopeLevel workspaceLevel,
+            WorkspaceLimits workspaceLimits, ConversationStore conversations, List<ToolInterceptor> interceptors,
+            Duration toolTimeout) {
+
+        static final Settings DEFAULT = new Settings(MemoryStore.NONE, ScopeLevel.USER, Workspace.NONE, ScopeLevel.USER,
+                WorkspaceLimits.DEFAULT, ConversationStore.NONE, List.of(), DEFAULT_TOOL_TIMEOUT);
+
+        Settings {
+            Objects.requireNonNull(memory, "memory");
+            Objects.requireNonNull(memoryLevel, "memoryLevel");
+            Objects.requireNonNull(workspace, "workspace");
+            Objects.requireNonNull(workspaceLevel, "workspaceLevel");
+            Objects.requireNonNull(workspaceLimits, "workspaceLimits");
+            Objects.requireNonNull(conversations, "conversations");
+            interceptors = List.copyOf(interceptors);
+            Objects.requireNonNull(toolTimeout, "toolTimeout");
+        }
+    }
 
     private final LlmRouter router;
     private final ToolRegistry tools;
-    private final MemoryStore memory;
-    private final ScopeLevel memoryLevel;
-    private final Workspace workspace;
-    private final ScopeLevel workspaceLevel;
-    private final WorkspaceLimits workspaceLimits;
+    private final Settings settings;
 
     public AgentLoop(LlmRouter router) {
         this(router, new ToolRegistry());
@@ -128,28 +153,24 @@ public final class AgentLoop {
     }
 
     public AgentLoop(LlmRouter router, ToolRegistry tools, MemoryStore memory) {
-        this(router, tools, memory, ScopeLevel.USER, Workspace.NONE, ScopeLevel.USER, WorkspaceLimits.DEFAULT);
+        this(router, tools, new Settings(memory, Settings.DEFAULT.memoryLevel(), Settings.DEFAULT.workspace(),
+                Settings.DEFAULT.workspaceLevel(), Settings.DEFAULT.workspaceLimits(), Settings.DEFAULT.conversations(),
+                Settings.DEFAULT.interceptors(), Settings.DEFAULT.toolTimeout()));
     }
 
-    private AgentLoop(
-            LlmRouter router, ToolRegistry tools, MemoryStore memory, ScopeLevel memoryLevel,
-            Workspace workspace, ScopeLevel workspaceLevel, WorkspaceLimits workspaceLimits) {
+    private AgentLoop(LlmRouter router, ToolRegistry tools, Settings settings) {
         this.router = Objects.requireNonNull(router, "router");
         this.tools = Objects.requireNonNull(tools, "tools");
-        this.memory = Objects.requireNonNull(memory, "memory");
-        this.memoryLevel = Objects.requireNonNull(memoryLevel, "memoryLevel");
-        this.workspace = Objects.requireNonNull(workspace, "workspace");
-        this.workspaceLevel = Objects.requireNonNull(workspaceLevel, "workspaceLevel");
-        this.workspaceLimits = Objects.requireNonNull(workspaceLimits, "workspaceLimits");
+        this.settings = Objects.requireNonNull(settings, "settings");
     }
 
     /**
-     * A loop sharing this one's router, memory, workspace and their settings, but offering
-     * {@code tools} instead — how one process runs many agents with different tool sets over the
-     * same infrastructure (see {@code AgentRuntime}).
+     * A loop sharing this one's router, memory, workspace, conversation store, interceptors and
+     * settings, but offering {@code tools} instead — how one process runs many agents with
+     * different tool sets over the same infrastructure (see {@code AgentRuntime}).
      */
     public AgentLoop withTools(ToolRegistry tools) {
-        return new AgentLoop(router, tools, memory, memoryLevel, workspace, workspaceLevel, workspaceLimits);
+        return new AgentLoop(router, tools, settings);
     }
 
     /** The tools this loop offers. */
@@ -180,11 +201,14 @@ public final class AgentLoop {
         private boolean compress = true;
         private List<CompressionMethod> compressionMethods;
         private ToolRegistry tools = new ToolRegistry();
-        private MemoryStore memory = MemoryStore.NONE;
-        private ScopeLevel memoryLevel = ScopeLevel.USER;
-        private Workspace workspace = Workspace.NONE;
-        private ScopeLevel workspaceLevel = ScopeLevel.USER;
-        private WorkspaceLimits workspaceLimits = WorkspaceLimits.DEFAULT;
+        private MemoryStore memory = Settings.DEFAULT.memory();
+        private ScopeLevel memoryLevel = Settings.DEFAULT.memoryLevel();
+        private Workspace workspace = Settings.DEFAULT.workspace();
+        private ScopeLevel workspaceLevel = Settings.DEFAULT.workspaceLevel();
+        private WorkspaceLimits workspaceLimits = Settings.DEFAULT.workspaceLimits();
+        private ConversationStore conversations = Settings.DEFAULT.conversations();
+        private final List<ToolInterceptor> interceptors = new ArrayList<>();
+        private Duration toolTimeout = Settings.DEFAULT.toolTimeout();
 
         private Builder() {
         }
@@ -218,7 +242,7 @@ public final class AgentLoop {
             return this;
         }
 
-        /** File storage for the workspace tools, e.g. an {@code InMemoryWorkspace} or your own; defaults to {@link Workspace#NONE}. */
+        /** File storage for the workspace tools and attachments, e.g. an {@code InMemoryWorkspace} or your own; defaults to {@link Workspace#NONE}. */
         public Builder workspace(Workspace workspace) {
             this.workspace = workspace;
             return this;
@@ -233,6 +257,31 @@ public final class AgentLoop {
         /** Caps on each scope's workspace; defaults to {@link WorkspaceLimits#DEFAULT}. */
         public Builder workspaceLimits(WorkspaceLimits workspaceLimits) {
             this.workspaceLimits = workspaceLimits;
+            return this;
+        }
+
+        /** Where each chat session's earlier turns are kept, e.g. an {@code InMemoryConversationStore}; defaults to none. */
+        public Builder conversations(ConversationStore conversations) {
+            this.conversations = conversations;
+            return this;
+        }
+
+        /** Adds a {@link ToolInterceptor}; several run in the order added. */
+        public Builder toolInterceptor(ToolInterceptor interceptor) {
+            interceptors.add(Objects.requireNonNull(interceptor, "interceptor"));
+            return this;
+        }
+
+        /**
+         * How long a tool call may take before it's interrupted and the model told it timed out,
+         * for tools that don't set their own ({@code RegisteredTool.withTimeout}). Defaults to
+         * {@link #DEFAULT_TOOL_TIMEOUT}.
+         */
+        public Builder toolTimeout(Duration toolTimeout) {
+            if (toolTimeout == null || toolTimeout.isZero() || toolTimeout.isNegative()) {
+                throw new IllegalArgumentException("toolTimeout must be positive");
+            }
+            this.toolTimeout = toolTimeout;
             return this;
         }
 
@@ -262,7 +311,8 @@ public final class AgentLoop {
             }
 
             LlmRouter effectiveRouter = router != null ? router : buildRouter();
-            return new AgentLoop(effectiveRouter, tools, memory, memoryLevel, workspace, workspaceLevel, workspaceLimits);
+            return new AgentLoop(effectiveRouter, tools, new Settings(memory, memoryLevel, workspace, workspaceLevel,
+                    workspaceLimits, conversations, interceptors, toolTimeout));
         }
 
         private LlmRouter buildRouter() {
@@ -293,9 +343,9 @@ public final class AgentLoop {
         }
     }
 
-    /** Runs {@code prompt} with no agent profile, no files, and no status-message callback. */
-    public void run(String prompt, Consumer<AgentLoopResult> onResult, Consumer<Throwable> onError) {
-        run(LoopRequest.builder()
+    /** Runs {@code prompt} with no agent profile, no attachments, and no status-message callback. */
+    public RunHandle run(String prompt, Consumer<AgentLoopResult> onResult, Consumer<Throwable> onError) {
+        return run(LoopRequest.builder()
                 .prompt(prompt)
                 .onResult(onResult)
                 .onError(onError)
@@ -303,9 +353,9 @@ public final class AgentLoop {
     }
 
     /** Same as {@link #run(String, Consumer, Consumer)}, additionally reporting status updates via {@code onMessage}. */
-    public void run(
+    public RunHandle run(
             String prompt, Consumer<AgentLoopResult> onResult, Consumer<Throwable> onError, Consumer<AgentMessage> onMessage) {
-        run(LoopRequest.builder()
+        return run(LoopRequest.builder()
                 .prompt(prompt)
                 .onResult(onResult)
                 .onError(onError)
@@ -313,17 +363,21 @@ public final class AgentLoop {
                 .build());
     }
 
-    /** The canonical entry point: every other {@code run} overload delegates here. */
-    public void run(LoopRequest request) {
+    /** The canonical entry point: every other {@code run} overload delegates here. Returns immediately. */
+    public RunHandle run(LoopRequest request) {
         Objects.requireNonNull(request, "request");
-        EXECUTOR.submit(() -> new Run(request).execute());
+        Run run = new Run(request);
+        EXECUTOR.execute(run::execute);
+        return run;
     }
 
     /**
      * Runs to completion on the <em>calling</em> thread and returns the result — for callers that
      * are already on a thread they're happy to block (a virtual thread, a tool handler delegating to
      * another agent, a test). The builder's own {@code onResult}/{@code onError} are replaced;
-     * {@code onMessage} and everything else is used as given.
+     * {@code onMessage} and everything else is used as given. Interrupting the calling thread
+     * cancels the run (the result then has {@code TerminationReason.CANCELLED}, and the thread's
+     * interrupt status is restored).
      *
      * @throws RuntimeException whatever would have gone to {@code onError}; a checked exception is
      *                          wrapped in an {@link IllegalStateException}
@@ -347,55 +401,114 @@ public final class AgentLoop {
     }
 
     /**
-     * One in-flight execution's state — created fresh per {@link #run(LoopRequest)} call and
-     * confined to the single virtual thread {@link #execute()} runs on (branches execute
-     * sequentially on that same thread this pass, so no synchronization is needed here).
+     * One in-flight execution's state — created fresh per run and confined to the single thread
+     * {@link #execute()} runs on (branches execute sequentially on that same thread, so no
+     * synchronization is needed beyond the cancellation fields).
      */
-    private final class Run implements CompressionListener {
+    private final class Run implements CompressionListener, RunHandle {
 
         private final LoopRequest request;
         private final AgentProfile profile;
-
-        /**
-         * Read from {@link LoopRequest#files()} once and reused, unchanged, on every call this
-         * run makes. Combined with reusing the same {@link LlmRouter} (and so the same adapter
-         * instances) across those calls, this is exactly the pattern {@code llm-router} 1.0.2's
-         * adapter-level content-hash dedup relies on: repeat calls with the same {@link Attachment}
-         * bytes get uploaded once (via each provider's Files API) and referenced by id afterward,
-         * rather than re-embedded every turn. Nothing else to do here to get that for free.
-         */
-        private final List<Attachment> attachments;
-
         private final UUID executionId = UUID.randomUUID();
         private final Scope scope;
         private final ScopedMemory scopedMemory;
         private final ScopedWorkspace scopedWorkspace;
+        private final RouterConfig routerConfig;
+        private final RouterConfig toolsRequiredConfig;
         private final List<StepRecord> steps = new ArrayList<>();
         private final Instant startedAt = Instant.now();
+
+        /** Earlier turns of this conversation, prefixed to every model call. */
+        private List<Message> conversation = List.of();
+        private boolean persistConversation;
+        /** Context describing this request's attachments (and any text ones inline), or {@code null}. */
+        private Message attachmentNote;
+        /** Attachments the model sees directly: images and PDFs from the request, then files tools showed it. */
+        private final List<Attachment> requestAttachments = new ArrayList<>();
+        private final LinkedHashMap<String, Attachment> shownFiles = new LinkedHashMap<>();
+        private List<String> attachmentPaths = List.of();
+
         private int nextThread = 1;
         /** The thread whose LLM call is in flight — what any compression reported mid-call is attributed to. */
         private int currentThread = 0;
         private int stepCount = 0;
         private int accumulatedCostUsdCents = 0;
+        private Response lastResponse;
+
+        private volatile boolean cancelRequested;
+        private volatile boolean cancelled;
+        private volatile boolean done;
+        private volatile Thread runner;
+        /** Cancellation came from someone interrupting a {@link #runAndWait} caller, so their interrupt status is restored after. */
+        private boolean interruptedFromOutside;
 
         private Run(LoopRequest request) {
             this.request = request;
             this.profile = request.agentProfile() != null ? request.agentProfile() : AgentProfile.DEFAULT;
-            this.attachments = toAttachments(request.files());
             this.scope = request.scope() != null ? request.scope() : Scope.ephemeral(executionId);
-            this.scopedMemory = memory.scopedTo(scope.atLevel(memoryLevel));
-            this.scopedWorkspace = workspace.scopedTo(scope.atLevel(workspaceLevel), workspaceLimits);
+            this.scopedMemory = settings.memory().scopedTo(scope.atLevel(settings.memoryLevel()));
+            this.scopedWorkspace = settings.workspace().scopedTo(scope.atLevel(settings.workspaceLevel()), settings.workspaceLimits());
+            this.routerConfig = request.routerConfig() != null ? request.routerConfig() : profile.routerConfig();
+            this.toolsRequiredConfig = RouterConfigs.requiring(routerConfig, Feature.TOOLS);
         }
 
+        // ---- RunHandle ----------------------------------------------------------------------
+
+        @Override
+        public UUID executionId() {
+            return executionId;
+        }
+
+        @Override
+        public void cancel() {
+            if (done || cancelRequested) {
+                return;
+            }
+            cancelRequested = true;
+            cancelled = true;
+            Thread thread = runner;
+            if (thread != null) {
+                thread.interrupt();
+            }
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return cancelled;
+        }
+
+        @Override
+        public boolean isDone() {
+            return done;
+        }
+
+        // ---- execution ----------------------------------------------------------------------
+
         void execute() {
-            HistoryCompressor.withListener(this, () -> {
-                executeInScope();
-                return null;
-            });
+            runner = Thread.currentThread();
+            try {
+                if (cancelRequested) {
+                    // Cancelled before it started: interrupt ourselves so the first checkpoint stops it.
+                    runner.interrupt();
+                }
+                HistoryCompressor.withListener(this, () -> {
+                    executeInScope();
+                    return null;
+                });
+            } finally {
+                done = true;
+                runner = null;
+                Thread.interrupted(); // our own cancellation/timeout interrupts end here
+                if (interruptedFromOutside) {
+                    Thread.currentThread().interrupt();
+                }
+            }
         }
 
         private void executeInScope() {
             try {
+                loadConversation();
+                prepareAttachments();
                 if (profile.planMode() == PlanMode.NEVER_PLAN) {
                     runNeverPlan();
                     return;
@@ -418,20 +531,88 @@ public final class AgentLoop {
                 Response finalResponse = outcome.response().toBuilder().content(outcome.finalAnswer()).build();
                 complete(finalResponse, TerminationReason.COMPLETED);
             } catch (BudgetExceeded e) {
-                Response truncated = truncatedResponse(e.lastResponse);
+                Response truncated = partialResponse(e.lastResponse,
+                        "Stopped early before producing a final answer: a cost or time limit was reached.");
                 recordStep(e.thread, StepAction.TRUNCATED, "budget exceeded", null, null, truncated.getContent(), e.lastResponse);
                 complete(truncated, e.reason);
             } catch (Exception e) {
-                request.onError().accept(e);
+                if (cancelled || interruptedBy(e)) {
+                    completeCancelled();
+                } else {
+                    request.onError().accept(e);
+                }
             }
+        }
+
+        private void completeCancelled() {
+            emit(currentThread, MessageType.WARNING, "Run cancelled.");
+            Response partial = partialResponse(lastResponse, "Cancelled before producing a final answer.");
+            recordStep(currentThread, StepAction.TRUNCATED, "cancelled", null, null, partial.getContent(), lastResponse);
+            complete(partial, TerminationReason.CANCELLED);
+        }
+
+        private void loadConversation() {
+            if (request.history() != null) {
+                conversation = request.history();
+            } else if (request.scope() != null && settings.conversations() != ConversationStore.NONE) {
+                conversation = List.copyOf(settings.conversations().load(request.scope()));
+                persistConversation = true;
+            }
+        }
+
+        /**
+         * Saves each attachment to the workspace (unless turned off or there's no workspace),
+         * shows images and PDFs to the model directly, includes small text files inline, and
+         * tells the model about all of them.
+         */
+        private void prepareAttachments() {
+            if (request.attachments().isEmpty()) {
+                return;
+            }
+            boolean save = request.saveAttachments() && settings.workspace() != Workspace.NONE;
+            List<String> lines = new ArrayList<>();
+            List<String> saved = new ArrayList<>();
+            int index = 0;
+            for (InputFile file : request.attachments()) {
+                index++;
+                StringBuilder line = new StringBuilder("- ").append(file.filename()).append(" (")
+                        .append(file.mediaType()).append(", ").append(humanSize(file.size())).append(')');
+                if (save) {
+                    try {
+                        String path = scopedWorkspace.write(UPLOADS_FOLDER + uploadName(file.filename(), index),
+                                file.data(), file.mediaType()).path();
+                        saved.add(path);
+                        line.append(", saved in the workspace at ").append(path);
+                    } catch (WorkspaceException e) {
+                        line.append(", which couldn't be saved to the workspace: ").append(e.getMessage());
+                    }
+                }
+                String type = file.mediaType().toLowerCase(Locale.ROOT);
+                if (type.startsWith("image/") || type.equals("application/pdf")) {
+                    requestAttachments.add(Attachment.builder()
+                            .mediaType(file.mediaType()).data(file.data()).filename(file.filename()).build());
+                    line.append(" — attached for you to see directly");
+                } else if (MediaTypes.isText(file.mediaType())) {
+                    String text = new String(file.data(), StandardCharsets.UTF_8);
+                    if (text.length() <= MAX_INLINE_ATTACHMENT_CHARS) {
+                        line.append(":\n```\n").append(text.strip()).append("\n```");
+                    } else {
+                        line.append(" — too long to include here");
+                    }
+                }
+                lines.add(line.toString());
+            }
+            attachmentPaths = List.copyOf(saved);
+            attachmentNote = Message.system("The user attached " + request.attachments().size()
+                    + " file(s) to this message:\n" + String.join("\n", lines));
+            emit(0, MessageType.INFO, "Received " + request.attachments().size() + " attachment(s)"
+                    + (saved.isEmpty() ? "." : "; saved to " + String.join(", ", saved) + "."));
         }
 
         private void runNeverPlan() {
             emit(0, MessageType.THINKING, "Answering directly.");
-            Request req = Request.builder()
-                    .prompt(request.prompt())
-                    .systemInstructions(profile.toSystemInstructionsFragment())
-                    .attachments(attachments)
+            Request req = request(request.prompt(), profile.toSystemInstructionsFragment(), List.of())
+                    .config(routerConfig)
                     .build();
             Response response = call(0, req);
             recordStep(0, StepAction.COMPLETE, request.prompt(), null, null, response.getContent(), response);
@@ -440,14 +621,11 @@ public final class AgentLoop {
 
         /** {@code AUTO} only: a cheap call deciding between {@code ALWAYS_PLAN} and {@code RECURSIVE_ON_EACH_STEP} behavior. */
         private boolean checkPlanNeeded(String systemInstructions) {
-            Request req = Request.builder()
-                    .prompt("Goal: " + request.prompt() + "\n\nDoes accomplishing this require breaking it into an "
+            Request req = request("Goal: " + request.prompt() + "\n\nDoes accomplishing this require breaking it into an "
                             + "explicit multi-step plan executed in order, or can it be pursued step-by-step, "
-                            + "deciding the next action as you go?")
-                    .systemInstructions(systemInstructions)
-                    .attachments(attachments)
+                            + "deciding the next action as you go?", systemInstructions, List.of())
                     .responseSchema(AgentLoopSchemas.PLAN_NEEDED_SCHEMA)
-                    .config(RouterConfig.builder().costOptimized(true).build())
+                    .config(RouterConfigs.costOptimized(routerConfig))
                     .build();
             Response response = call(0, req);
 
@@ -463,12 +641,10 @@ public final class AgentLoop {
             String guidance = profile.planningGuidance().isEmpty()
                     ? ""
                     : "\n\nPlanning guidance:\n- " + String.join("\n- ", profile.planningGuidance());
-            Request req = Request.builder()
-                    .prompt("Goal: " + request.prompt() + guidance + "\n\nProduce an ordered list of steps to accomplish this goal.")
-                    .systemInstructions(systemInstructions)
-                    .history(List.copyOf(history))
-                    .attachments(attachments)
+            Request req = request("Goal: " + request.prompt() + guidance + "\n\nProduce an ordered list of steps to accomplish this goal.",
+                    systemInstructions, history)
                     .responseSchema(AgentLoopSchemas.PLAN_SCHEMA)
+                    .config(routerConfig)
                     .build();
             Response response = call(0, req);
 
@@ -524,13 +700,10 @@ public final class AgentLoop {
                             recalled.stream().map(MemoryEntry::content).toList())));
                 }
 
-                Request req = Request.builder()
-                        .prompt(history.isEmpty() ? goal : "Continue toward the goal: " + goal)
-                        .systemInstructions(systemInstructions)
-                        .history(List.copyOf(effectiveHistory))
-                        .attachments(attachments)
+                Request req = request(history.isEmpty() ? goal : "Continue toward the goal: " + goal,
+                        systemInstructions, effectiveHistory)
                         .tools(List.copyOf(availableTools))
-                        .config(TOOLS_REQUIRED)
+                        .config(toolsRequiredConfig)
                         .build();
                 Response response = call(thread, req);
 
@@ -581,36 +754,164 @@ public final class AgentLoop {
             }
         }
 
-        /** A registered tool's handler, else the caller's {@link LoopRequest#onUnregisteredTool()}. */
-        private String runTool(int thread, ToolCall call) {
+        /** A request carrying everything every call needs: the conversation so far, attachment context, and what the model can see. */
+        private Request.RequestBuilder request(String prompt, String systemInstructions, List<Message> history) {
+            List<Message> messages = new ArrayList<>(conversation);
+            if (attachmentNote != null) {
+                messages.add(attachmentNote);
+            }
+            messages.addAll(history);
+            List<Attachment> visible = new ArrayList<>(requestAttachments);
+            visible.addAll(shownFiles.values());
+            return Request.builder()
+                    .prompt(prompt)
+                    .systemInstructions(systemInstructions)
+                    .history(List.copyOf(messages))
+                    .attachments(List.copyOf(visible));
+        }
+
+        // ---- tools --------------------------------------------------------------------------
+
+        /** Runs one (non-control) tool call through the interceptors, a registered handler or the caller, and the timeout. */
+        private String runTool(int thread, ToolCall requested) {
+            checkCancelled();
+            ToolContext context = toolContext(thread);
+            List<ToolInterceptor> interceptors = settings.interceptors();
+            ToolCall call = requested;
+            String result = null;
+            int ran = 0;
+            try {
+                for (ToolInterceptor interceptor : interceptors) {
+                    ran++;
+                    ToolDecision decision = interceptor.before(call, context);
+                    if (decision == null || decision.action() == ToolDecision.Action.PROCEED) {
+                        continue;
+                    }
+                    if (decision.action() == ToolDecision.Action.PROCEED_WITH) {
+                        call = ToolCall.builder().id(call.getId()).name(call.getName()).arguments(decision.arguments()).build();
+                        continue;
+                    }
+                    if (decision.action() == ToolDecision.Action.RESPOND) {
+                        result = decision.text();
+                    } else {
+                        emit(thread, MessageType.WARNING, "Tool " + call.getName() + " was refused: " + decision.text());
+                        result = "Error: " + decision.text();
+                    }
+                    break;
+                }
+                if (result == null) {
+                    result = execute(thread, call, context);
+                }
+            } catch (BudgetExceeded | Cancelled control) {
+                throw control;
+            } catch (RuntimeException e) {
+                if (cancelled || interruptedBy(e)) {
+                    throw new Cancelled();
+                }
+                for (ToolInterceptor interceptor : interceptors) {
+                    interceptor.failed(call, e, context);
+                }
+                throw e;
+            }
+            for (int i = ran - 1; i >= 0; i--) {
+                result = interceptors.get(i).after(call, result, context);
+            }
+            return result;
+        }
+
+        /** A registered tool's handler (under its timeout), else the caller's {@link LoopRequest#onUnregisteredTool()}. */
+        private String execute(int thread, ToolCall call, ToolContext context) {
             Optional<RegisteredTool> registered = tools.find(call.getName());
-            if (registered.isPresent()) {
-                emit(thread, MessageType.TOOL_CALL, "Calling tool: " + call.getName());
-                ToolContext context = new ToolContext(executionId, thread, scope, scopedMemory, scopedWorkspace,
-                        (type, message) -> emit(thread, type, message));
-                try {
-                    return registered.get().handler().handle(call.getArguments(), context);
-                } catch (ToolInputException e) {
-                    emit(thread, MessageType.WARNING, "Tool " + call.getName() + " reported: " + e.getMessage());
-                    return "Error: " + e.getMessage();
+            if (registered.isEmpty()) {
+                emit(thread, MessageType.TOOL_CALL, "Handing unregistered tool to the caller: " + call.getName());
+                Optional<String> resolved = request.onUnregisteredTool().handle(call);
+                if (resolved == null || resolved.isEmpty()) {
+                    throw new UnregisteredToolException(call.getName());
+                }
+                return resolved.get();
+            }
+            emit(thread, MessageType.TOOL_CALL, "Calling tool: " + call.getName());
+            try {
+                return withTimeout(thread, registered.get(), call, context);
+            } catch (ToolInputException e) {
+                emit(thread, MessageType.WARNING, "Tool " + call.getName() + " reported: " + e.getMessage());
+                return "Error: " + e.getMessage();
+            }
+        }
+
+        /**
+         * Runs the handler on this thread — so scoped context (e.g. delegation depth) still applies —
+         * with a watchdog that interrupts it if it overruns its timeout, or the run's remaining
+         * {@code maxDuration}, whichever is sooner.
+         */
+        private String withTimeout(int thread, RegisteredTool tool, ToolCall call, ToolContext context) {
+            Duration timeout = tool.timeout() != null ? tool.timeout() : settings.toolTimeout();
+            boolean cappedByRun = false;
+            if (request.maxDuration() != null) {
+                Duration remaining = request.maxDuration().minus(Duration.between(startedAt, Instant.now()));
+                if (remaining.compareTo(timeout) < 0) {
+                    timeout = remaining.isNegative() || remaining.isZero() ? Duration.ofMillis(1) : remaining;
+                    cappedByRun = true;
                 }
             }
 
-            emit(thread, MessageType.TOOL_CALL, "Handing unregistered tool to the caller: " + call.getName());
-            Optional<String> resolved = request.onUnregisteredTool().handle(call);
-            if (resolved == null || resolved.isEmpty()) {
-                throw new UnregisteredToolException(call.getName());
+            Thread self = Thread.currentThread();
+            AtomicBoolean finished = new AtomicBoolean();
+            Duration limit = timeout;
+            Thread watchdog = Thread.ofVirtual().start(() -> {
+                try {
+                    Thread.sleep(limit);
+                    if (finished.compareAndSet(false, true)) {
+                        self.interrupt();
+                    }
+                } catch (InterruptedException ignored) {
+                    // the tool finished first
+                }
+            });
+            try {
+                String result = tool.handler().handle(call.getArguments(), context);
+                if (finished.compareAndSet(false, true)) {
+                    return result;
+                }
+            } catch (RuntimeException e) {
+                if (finished.compareAndSet(false, true)) {
+                    throw e;
+                }
+            } finally {
+                watchdog.interrupt();
             }
-            return resolved.get();
+
+            // Timed out: the watchdog interrupted us.
+            Thread.interrupted();
+            if (cancelled) {
+                throw new Cancelled();
+            }
+            if (cappedByRun) {
+                emit(thread, MessageType.WARNING, "Stopping early: time limit reached during tool " + call.getName() + ".");
+                throw new BudgetExceeded(thread, TerminationReason.TIME_LIMIT_REACHED, lastResponse);
+            }
+            throw new ToolInputException(call.getName() + " didn't finish within " + humanDuration(timeout)
+                    + " and was stopped; try a smaller request or a different approach");
         }
 
-        /** Every LLM call the run makes goes through here, so each one counts toward {@code maxSteps} and the budgets. */
-        private Response call(int thread, Request req) {
-            checkStepBudget();
-            currentThread = thread;
-            Response response = router.complete(req);
-            checkBudgets(thread, response);
-            return response;
+        private ToolContext toolContext(int thread) {
+            return new ToolContext(executionId, thread, scope, scopedMemory, scopedWorkspace, new ToolContext.RunAccess() {
+                @Override
+                public void report(MessageType type, String message) {
+                    emit(thread, type, message);
+                }
+
+                @Override
+                public void showToModel(WorkspaceFile file) {
+                    shownFiles.remove(file.path());
+                    shownFiles.put(file.path(), Attachment.builder()
+                            .mediaType(file.mediaType()).data(file.content()).filename(file.path()).build());
+                    while (shownFiles.size() > MAX_SHOWN_FILES) {
+                        shownFiles.remove(shownFiles.keySet().iterator().next());
+                    }
+                    emit(thread, MessageType.INFO, "Showing " + file.path() + " to the model.");
+                }
+            });
         }
 
         /**
@@ -625,6 +926,52 @@ public final class AgentLoop {
             if (!ignored.isEmpty()) {
                 emit(thread, MessageType.WARNING, "Ignoring " + ignored.size() + " other tool call(s) requested alongside "
                         + handled.getName() + ": " + String.join(", ", ignored));
+            }
+        }
+
+        // ---- model calls and limits -----------------------------------------------------------
+
+        /** Every LLM call the run makes goes through here, so each one counts toward {@code maxSteps} and the budgets. */
+        private Response call(int thread, Request req) {
+            checkCancelled();
+            checkStepBudget();
+            currentThread = thread;
+            Response response = router.complete(req);
+            checkCancelled();
+            lastResponse = response;
+            checkBudgets(thread, response);
+            return response;
+        }
+
+        /**
+         * Whether {@code failure} came from this thread being interrupted from outside (someone
+         * interrupting a {@code runAndWait} caller) — the blocked call then usually clears the
+         * interrupt flag and rethrows, so the cause chain is the only evidence left. If so, the run
+         * counts as cancelled.
+         */
+        private boolean interruptedBy(Throwable failure) {
+            boolean interrupted = Thread.currentThread().isInterrupted();
+            for (Throwable t = failure; t != null && !interrupted; t = t.getCause()) {
+                interrupted = t instanceof InterruptedException
+                        || t instanceof java.io.InterruptedIOException
+                        || t instanceof java.nio.channels.ClosedByInterruptException;
+            }
+            if (interrupted && !cancelled) {
+                cancelled = true;
+                interruptedFromOutside = !cancelRequested;
+            }
+            return interrupted;
+        }
+
+        /** Stops at a safe point if the run was cancelled — via its handle, or by interrupting a {@code runAndWait} caller. */
+        private void checkCancelled() {
+            if (cancelled) {
+                throw new Cancelled();
+            }
+            if (Thread.currentThread().isInterrupted()) {
+                cancelled = true;
+                interruptedFromOutside = !cancelRequested;
+                throw new Cancelled();
             }
         }
 
@@ -680,6 +1027,8 @@ public final class AgentLoop {
             }
         }
 
+        // ---- reporting ----------------------------------------------------------------------
+
         private void emit(int thread, MessageType type, String message) {
             request.onMessage().accept(AgentMessage.of(executionId, thread, type, message));
         }
@@ -700,17 +1049,30 @@ public final class AgentLoop {
         }
 
         private void complete(Response finalResponse, TerminationReason reason) {
+            saveConversationTurn(finalResponse.getContent());
             Execution execution = new Execution(executionId, List.copyOf(steps), reason);
             request.onResult().accept(new AgentLoopResult(finalResponse, execution, List.copyOf(scopedWorkspace.changedPaths())));
         }
 
-        /** The best-effort "result as is" when a bound was hit mid-run: the last response's own content, if any. */
-        private Response truncatedResponse(Response lastResponse) {
-            String content = lastResponse.getContent();
-            if (content == null || content.isBlank()) {
-                content = "Stopped early before producing a final answer: a cost or time limit was reached.";
+        /** Appends this turn — the user's message (noting any saved attachments) and the answer — to the session's conversation. */
+        private void saveConversationTurn(String answer) {
+            if (!persistConversation) {
+                return;
             }
-            return lastResponse.toBuilder().content(content).build();
+            String userMessage = attachmentPaths.isEmpty()
+                    ? request.prompt()
+                    : request.prompt() + "\n\n[Attached: " + String.join(", ", attachmentPaths) + "]";
+            settings.conversations().append(request.scope(),
+                    List.of(Message.user(userMessage), Message.assistant(answer == null ? "" : answer)));
+        }
+
+        /** The best-effort "result as is" when a run stops early: the last response's own content, if any. */
+        private Response partialResponse(Response last, String fallback) {
+            if (last == null) {
+                return Response.builder().content(fallback).build();
+            }
+            String content = last.getContent();
+            return last.toBuilder().content(content == null || content.isBlank() ? fallback : content).build();
         }
     }
 
@@ -735,28 +1097,45 @@ public final class AgentLoop {
         }
     }
 
+    /** Internal control-flow signal: the run was cancelled. Never surfaced to callers. */
+    private static final class Cancelled extends RuntimeException {
+        Cancelled() {
+            super(null, null, false, false);
+        }
+    }
+
     private static Optional<ToolCall> findToolCall(Response response, String name) {
         return response.getToolCalls().stream().filter(call -> name.equals(call.getName())).findFirst();
     }
 
-    private static List<Attachment> toAttachments(List<File> files) {
-        if (files.isEmpty()) {
-            return List.of();
+    /** A workspace-safe file name for an upload: its last path segment, with anything unsafe replaced. */
+    private static String uploadName(String filename, int index) {
+        String name = filename.replace('\\', '/');
+        name = name.substring(name.lastIndexOf('/') + 1).replaceAll("[\\p{Cntrl}:]", "_").strip();
+        if (name.isEmpty() || name.equals(".") || name.equals("..")) {
+            name = "upload-" + index;
         }
-        List<Attachment> result = new ArrayList<>(files.size());
-        for (File file : files) {
-            try {
-                byte[] data = Files.readAllBytes(file.toPath());
-                String mediaType = Files.probeContentType(file.toPath());
-                result.add(Attachment.builder()
-                        .mediaType(mediaType == null ? "application/octet-stream" : mediaType)
-                        .data(data)
-                        .filename(file.getName())
-                        .build());
-            } catch (IOException e) {
-                throw new UncheckedIOException("Failed to read file: " + file, e);
-            }
+        return name.length() > 200 ? name.substring(name.length() - 200) : name;
+    }
+
+    private static String humanSize(long bytes) {
+        if (bytes < 1024) {
+            return bytes + " bytes";
         }
-        return List.copyOf(result);
+        if (bytes < 1024 * 1024) {
+            return String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0);
+        }
+        return String.format(Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024));
+    }
+
+    private static String humanDuration(Duration duration) {
+        long seconds = duration.toSeconds();
+        if (seconds < 1) {
+            return duration.toMillis() + " ms";
+        }
+        if (seconds < 120) {
+            return seconds + " seconds";
+        }
+        return duration.toMinutes() + " minutes";
     }
 }

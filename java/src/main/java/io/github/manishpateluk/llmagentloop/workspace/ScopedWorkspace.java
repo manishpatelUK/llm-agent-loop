@@ -5,6 +5,7 @@ import io.github.manishpateluk.llmagentloop.Scope;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -157,7 +158,7 @@ public final class ScopedWorkspace {
 
     /** Paths this view has written or deleted, in first-touched order. */
     public Set<String> changedPaths() {
-        return Set.copyOf(changedPaths);
+        return Collections.unmodifiableSet(new LinkedHashSet<>(changedPaths));
     }
 
     /** The partition key this view is bound to (already reduced to its level). */

@@ -3,6 +3,7 @@ package io.github.manishpateluk.llmagentloop.agent;
 import io.github.manishpateluk.llmagentloop.AgentLoop;
 import io.github.manishpateluk.llmagentloop.AgentLoopResult;
 import io.github.manishpateluk.llmagentloop.LoopRequest;
+import io.github.manishpateluk.llmagentloop.RunHandle;
 import io.github.manishpateluk.llmagentloop.Scope;
 import io.github.manishpateluk.llmagentloop.skill.Skill;
 import io.github.manishpateluk.llmagentloop.tool.ToolContext;
@@ -29,12 +30,12 @@ import java.util.function.Consumer;
  *         .workspace(myWorkspace)
  *         .build());
  *
- * Agent cofounder = Agent.builder(Files.readString(Path.of("agents/cofounder.md")))
+ * Agent assistant = Agent.builder(Files.readString(Path.of("agents/assistant.md")))
  *         .skills(Skills.memory(), Skills.files(), Skills.spreadsheets(), Skills.dataAnalysis())
  *         .delegateTo(legalAgent)
  *         .build();
  *
- * runtime.run(cofounder, userMessage, Scope.of(tenantId, userId, sessionId),
+ * runtime.run(assistant, userMessage, Scope.of(tenantId, userId, sessionId),
  *         result -> reply(result.finalResponse().getContent()),
  *         error -> reportFailure(error));
  * }</pre>
@@ -53,9 +54,9 @@ public final class AgentRuntime {
         this.base = Objects.requireNonNull(base, "base");
     }
 
-    /** Runs {@code agent} asynchronously for {@code scope}'s user, reporting through the callbacks. */
-    public void run(Agent agent, String prompt, Scope scope, Consumer<AgentLoopResult> onResult, Consumer<Throwable> onError) {
-        run(agent, LoopRequest.builder().prompt(prompt).scope(scope).onResult(onResult).onError(onError));
+    /** Runs {@code agent} asynchronously for {@code scope}'s user, reporting through the callbacks; the handle cancels it. */
+    public RunHandle run(Agent agent, String prompt, Scope scope, Consumer<AgentLoopResult> onResult, Consumer<Throwable> onError) {
+        return run(agent, LoopRequest.builder().prompt(prompt).scope(scope).onResult(onResult).onError(onError));
     }
 
     /**
@@ -63,8 +64,8 @@ public final class AgentRuntime {
      * messages, cost and time bounds...). The agent's profile replaces any {@code agentProfile}
      * set on the builder.
      */
-    public void run(Agent agent, LoopRequest.LoopRequestBuilder request) {
-        loopFor(agent).run(request.agentProfile(agent.profile()).build());
+    public RunHandle run(Agent agent, LoopRequest.LoopRequestBuilder request) {
+        return loopFor(agent).run(request.agentProfile(agent.profile()).build());
     }
 
     /** Runs {@code agent} on the calling thread and returns its result; failures are thrown. */

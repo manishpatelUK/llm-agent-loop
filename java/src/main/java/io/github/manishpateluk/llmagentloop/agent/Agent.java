@@ -1,5 +1,9 @@
 package io.github.manishpateluk.llmagentloop.agent;
 
+import com.manishpateluk.llmrouter.config.RouteEntry;
+import com.manishpateluk.llmrouter.config.RouterConfig;
+import com.manishpateluk.llmrouter.config.ThinkingLevel;
+import com.manishpateluk.llmrouter.provider.Provider;
 import io.github.manishpateluk.llmagentloop.AgentProfile;
 import io.github.manishpateluk.llmagentloop.PlanMode;
 import io.github.manishpateluk.llmagentloop.skill.Skill;
@@ -23,16 +27,21 @@ import java.util.regex.Pattern;
  * <p>The definition is Markdown with optional front matter:
  * <pre>{@code
  * ---
- * name: cofounder
- * description: A digital cofounder for early-stage startups
+ * name: assistant
+ * description: A general-purpose business assistant
  * plan_mode: auto            # auto | always_plan | never_plan | recursive_on_each_step
  * max_steps: 40
+ * models: anthropic/claude-sonnet-5-5, openai   # preference order; a provider alone lets the router pick its model
+ * thinking_level: high       # low | medium | high | max
+ * cost_optimized: false
  * ---
- * You are the user's cofounder. You handle admin, finance and product work end to end...
+ * You are the user's business assistant. You handle admin, finance and product work end to end...
  * }</pre>
  * Everything after the front matter becomes the agent's instructions, verbatim. {@code name} is
  * required (in the front matter or via the builder); it must match {@code ^[a-zA-Z0-9_-]{1,64}$}
- * since other agents delegate to it by name.
+ * since other agents delegate to it by name. {@code models}, {@code thinking_level} and
+ * {@code cost_optimized} set the agent's default {@link RouterConfig} (also settable with
+ * {@link Builder#routerConfig}); a run can still override it with {@code LoopRequest.routerConfig}.
  */
 public final class Agent {
 
@@ -43,6 +52,7 @@ public final class Agent {
     private final String instructions;
     private final PlanMode planMode;
     private final int maxSteps;
+    private final RouterConfig routerConfig;
     private final List<Skill> skills;
     private final List<RegisteredTool> tools;
     private final List<Agent> delegateAgents;
@@ -54,6 +64,7 @@ public final class Agent {
         this.instructions = b.instructions;
         this.planMode = b.planMode;
         this.maxSteps = b.maxSteps;
+        this.routerConfig = b.routerConfig();
         this.skills = List.copyOf(b.skills);
         this.tools = List.copyOf(b.tools);
         this.delegateAgents = List.copyOf(b.delegateAgents);
@@ -87,6 +98,11 @@ public final class Agent {
         return skills;
     }
 
+    /** How this agent's model calls are routed by default; {@code null} for the router's defaults. */
+    public RouterConfig routerConfig() {
+        return routerConfig;
+    }
+
     public List<RegisteredTool> tools() {
         return tools;
     }
@@ -116,6 +132,7 @@ public final class Agent {
                 .planMode(planMode)
                 .maxSteps(maxSteps)
                 .instructions(text.toString().strip())
+                .routerConfig(routerConfig)
                 .build();
     }
 
@@ -131,6 +148,10 @@ public final class Agent {
         private final String instructions;
         private PlanMode planMode = PlanMode.AUTO;
         private int maxSteps = 0;
+        private RouterConfig explicitRouterConfig;
+        private List<RouteEntry> models;
+        private ThinkingLevel thinkingLevel;
+        private Boolean costOptimized;
         private final List<Skill> skills = new ArrayList<>();
         private final List<RegisteredTool> tools = new ArrayList<>();
         private final List<Agent> delegateAgents = new ArrayList<>();
@@ -153,8 +174,11 @@ public final class Agent {
                             throw new IllegalArgumentException("max_steps must be a whole number, was \"" + entry.getValue() + "\"");
                         }
                     }
+                    case "models" -> models = parseModels(entry.getValue());
+                    case "thinking_level" -> thinkingLevel = parseThinkingLevel(entry.getValue());
+                    case "cost_optimized" -> costOptimized = parseBoolean("cost_optimized", entry.getValue());
                     default -> throw new IllegalArgumentException("Unknown front matter key '" + entry.getKey()
-                            + "'; supported: name, description, plan_mode, max_steps");
+                            + "'; supported: name, description, plan_mode, max_steps, models, thinking_level, cost_optimized");
                 }
             }
         }
@@ -177,6 +201,32 @@ public final class Agent {
         public Builder maxSteps(int maxSteps) {
             this.maxSteps = maxSteps;
             return this;
+        }
+
+        /**
+         * The agent's default routing — which providers/models in what order, thinking level, etc.
+         * Replaces anything the front matter's {@code models}/{@code thinking_level}/{@code cost_optimized} set.
+         */
+        public Builder routerConfig(RouterConfig routerConfig) {
+            this.explicitRouterConfig = routerConfig;
+            return this;
+        }
+
+        private RouterConfig routerConfig() {
+            if (explicitRouterConfig != null) {
+                return explicitRouterConfig;
+            }
+            if (models == null && thinkingLevel == null && costOptimized == null) {
+                return null;
+            }
+            RouterConfig.RouterConfigBuilder config = RouterConfig.builder().route(models);
+            if (thinkingLevel != null) {
+                config.thinkingLevel(thinkingLevel);
+            }
+            if (costOptimized != null) {
+                config.costOptimized(costOptimized);
+            }
+            return config.build();
         }
 
         public Builder skill(Skill skill) {
@@ -282,6 +332,57 @@ public final class Agent {
             return value.substring(1, value.length() - 1);
         }
         return value;
+    }
+
+    /** {@code "anthropic/claude-sonnet-5-5, openai"} — provider, optionally {@code /model}, comma-separated, in preference order. */
+    private static List<RouteEntry> parseModels(String value) {
+        List<RouteEntry> route = new ArrayList<>();
+        for (String part : value.split(",")) {
+            String entry = part.strip();
+            if (entry.isEmpty()) {
+                continue;
+            }
+            int slash = entry.indexOf('/');
+            String providerName = (slash < 0 ? entry : entry.substring(0, slash)).strip();
+            Provider provider = null;
+            for (Provider candidate : Provider.values()) {
+                if (candidate.name().equalsIgnoreCase(providerName) || candidate.toString().equalsIgnoreCase(providerName)) {
+                    provider = candidate;
+                }
+            }
+            if (provider == null) {
+                List<String> known = new ArrayList<>();
+                for (Provider candidate : Provider.values()) {
+                    known.add(candidate.name().toLowerCase(Locale.ROOT));
+                }
+                throw new IllegalArgumentException("Unknown provider '" + providerName + "' in models; known: " + known);
+            }
+            String model = slash < 0 ? "" : entry.substring(slash + 1).strip();
+            route.add(model.isEmpty() ? RouteEntry.of(provider) : RouteEntry.of(provider, model));
+        }
+        if (route.isEmpty()) {
+            throw new IllegalArgumentException("models must list at least one provider or provider/model");
+        }
+        return List.copyOf(route);
+    }
+
+    private static ThinkingLevel parseThinkingLevel(String value) {
+        try {
+            return ThinkingLevel.valueOf(value.strip().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("thinking_level must be one of low, medium, high, max; was \"" + value + "\"");
+        }
+    }
+
+    private static boolean parseBoolean(String key, String value) {
+        String v = value.strip().toLowerCase(Locale.ROOT);
+        if (v.equals("true") || v.equals("yes")) {
+            return true;
+        }
+        if (v.equals("false") || v.equals("no")) {
+            return false;
+        }
+        throw new IllegalArgumentException(key + " must be true or false; was \"" + value + "\"");
     }
 
     private static PlanMode parsePlanMode(String value) {

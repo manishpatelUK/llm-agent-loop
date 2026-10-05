@@ -41,7 +41,7 @@ loop.run(
     error -> System.err.println("Failed: " + error.getMessage()));
 ```
 
-`run(...)` is always asynchronous — it returns immediately and reports back entirely through the callbacks you supply, on a virtual thread. `loop.runAndWait(LoopRequest.builder()...)` runs on the calling thread instead and returns the `AgentLoopResult` (throwing whatever would have gone to `onError`).
+`run(...)` is always asynchronous — it returns immediately with a `RunHandle` (for cancelling) and reports back entirely through the callbacks you supply, on a virtual thread. `loop.runAndWait(LoopRequest.builder()...)` runs on the calling thread instead and returns the `AgentLoopResult` (throwing whatever would have gone to `onError`).
 
 For anything beyond a single call, start with **Agents** below — that's the level most products want.
 
@@ -55,12 +55,12 @@ The highest-level way to use the library. You write an agent's behaviour as Mark
 
 ```markdown
 ---
-name: cofounder
-description: A digital cofounder for early-stage startups
+name: assistant
+description: A general-purpose business assistant
 plan_mode: auto          # auto | always_plan | never_plan | recursive_on_each_step
 max_steps: 40
 ---
-You are the user's cofounder. You handle admin, finance and product work end to end:
+You are the user's business assistant. You handle admin, finance and product work end to end:
 draft documents into the workspace, build spreadsheets with live formulas, and ask the
 user before committing them to anything that costs money or is legally binding.
 ```
@@ -74,26 +74,33 @@ import io.github.manishpateluk.llmagentloop.skill.Skills;
 AgentRuntime runtime = new AgentRuntime(AgentLoop.builder()
     .memory(myMemoryStore)        // see "Extending the library" for writing your own
     .workspace(myWorkspace)
+    .conversations(myConversationStore)   // each session's earlier turns
+    .toolInterceptor(myAuditAndApprovals) // optional policy around every tool call
     .build());
 
 // Once per agent: the definition.
 Agent legal = Agent.fromMarkdown(Files.readString(Path.of("agents/legal.md")));
-Agent cofounder = Agent.builder(Files.readString(Path.of("agents/cofounder.md")))
+Agent assistant = Agent.builder(Files.readString(Path.of("agents/assistant.md")))
     .skills(Skills.memory(), Skills.files(), Skills.spreadsheets(), Skills.dataAnalysis(),
             Skills.web(new BraveSearch(braveKey)), Skills.askingTheUser(myHumanHandler))
     .tool(myCrmTool)
     .delegateTo(legal)            // adds delegate_to_agent; legal runs on the same runtime and scope
     .build();
 
-// Per message: run it for this user.
-runtime.run(cofounder, userMessage, Scope.of(tenantId, userId, sessionId),
-    result -> reply(result.finalResponse().getContent(), result.changedFiles()),
-    error -> reportFailure(error));
+// Per message: run it for this user (with uploads, if any). Keep the handle to cancel it.
+RunHandle handle = runtime.run(assistant, LoopRequest.builder()
+    .prompt(userMessage)
+    .attachments(uploads)                       // List<InputFile>: images, PDFs, CSVs, documents...
+    .scope(Scope.of(tenantId, userId, sessionId))
+    .onMessage(status -> showProgress(status))
+    .onResult(result -> reply(result.finalResponse().getContent(), result.changedFiles()))
+    .onError(error -> reportFailure(error)));
 
 // Or block on the calling thread (a virtual thread, a test):
-AgentLoopResult result = runtime.runAndWait(cofounder, userMessage, scope);
+AgentLoopResult result = runtime.runAndWait(assistant, userMessage, scope);
 ```
 
+- **Front matter can choose models.** `models: anthropic/claude-sonnet-5-5, openai` gives a preference order; a provider on its own lets the router pick its model. `thinking_level` and `cost_optimized` can also be set, or use `Agent.builder(md).routerConfig(...)`.
 - **The Markdown body becomes the agent's instructions, verbatim.** Front matter is optional apart from `name`, which must match `^[a-zA-Z0-9_-]{1,64}$` because other agents delegate by name. It can also be set with `Agent.builder(md).name(...)`. Unknown front matter keys are rejected, so a typo doesn't go unnoticed.
 - **Skills** bundle tools with guidance, which is added to the agent's instructions. The ready-made ones in `Skills` are `memory()`, `files()`, `spreadsheets()`, `dataAnalysis()`, `web(...)` and `askingTheUser(...)`. You can make your own with `new Skill(name, description, instructions, tools)`.
 - **Tools.** Each agent gets the runtime's base tools (those on the `AgentLoop` you pass in), plus its skills' tools, plus its own. Each agent's loop is built once and reused.
@@ -135,7 +142,9 @@ import io.github.manishpateluk.llmagentloop.LoopRequest;
 loop.run(LoopRequest.builder()
     .prompt("Draft a launch announcement for our new pricing page.")
     .agentProfile(myAgentProfile)          // optional — see below
-    .files(List.of(new File("brief.pdf"))) // optional
+    .attachments(List.of(InputFile.of("brief.pdf", bytes))) // optional — see "Chat sessions" below
+    .history(earlierTurns)                 // optional — or let a ConversationStore keep it
+    .routerConfig(myRouterConfig)          // optional — which models, in what order
     .onResult(result -> { /* ... */ })
     .onError(error -> { /* ... */ })
     .onMessage(message -> { /* ... */ })   // optional, defaults to a no-op — see "Status updates" below
@@ -145,7 +154,44 @@ loop.run(LoopRequest.builder()
     .build());
 ```
 
-`maxCostUsdCents` and `maxDuration` are approximate, best-effort bounds: checked after each step completes rather than mid-step, so the run may go slightly over before it notices. Crossing either stops the run **gracefully** — it still returns an answer via `onResult`, not `onError` — with `AgentLoopResult.execution().terminationReason()` telling you which bound (if either) was hit: `COMPLETED`, `COST_LIMIT_REACHED`, or `TIME_LIMIT_REACHED`.
+`maxCostUsdCents` and `maxDuration` are approximate, best-effort bounds: checked after each step completes rather than mid-step, so the run may go slightly over before it notices. Crossing either stops the run **gracefully** — it still returns an answer via `onResult`, not `onError` — with `AgentLoopResult.execution().terminationReason()` telling you which bound (if either) was hit: `COMPLETED`, `COST_LIMIT_REACHED`, `TIME_LIMIT_REACHED`, or `CANCELLED`.
+
+### Chat sessions: history, attachments, cancelling, model choice
+
+**Conversation history.** Give the loop a `ConversationStore` and pass a `Scope` with a session id. Each run then sees that session's earlier turns, so "make it shorter" knows what "it" is. After each run, the user's message and the final answer are appended. Tool calls and intermediate steps aren't stored: they're in the `Execution` trace, and leaving them out keeps later context compact. Long conversations are still compressed to fit each model.
+
+```java
+AgentLoop loop = AgentLoop.builder()
+    .conversations(new InMemoryConversationStore())   // or your own, over your database
+    // ...
+    .build();
+
+loop.run(LoopRequest.builder().prompt("Make it shorter").scope(Scope.of(tenantId, userId, sessionId)) /* ... */ .build());
+```
+
+If you keep chat history yourself, pass `.history(List.of(Message.user(...), Message.assistant(...)))` instead. The store is then neither read nor written for that run.
+
+**Attachments.** Files arrive as bytes in any format: images, PDFs, spreadsheets, CSVs, documents.
+
+```java
+.attachments(List.of(
+    InputFile.of(upload.getOriginalFilename(), upload.getInputStream()),   // media type guessed from the name
+    InputFile.of("photo.jpg", "image/jpeg", bytes)))
+```
+
+- **Images and PDFs** are shown to the model directly, for models that can take them.
+- **Small text files** (CSV, Markdown, JSON, ...) are included as text.
+- **Saving.** When a workspace is configured, every attachment is also saved under `uploads/`, and the model is told where. That lets tools work on it: `data_query` on a CSV, `spreadsheet_read` on a workbook, `document_read` on a PDF or Word file. Saved uploads appear in `result.changedFiles()`. Turn saving off per request with `.saveAttachments(false)`.
+- **Names.** Only the base name of the file is kept, with unsafe characters replaced, so a name like `../../etc/passwd` can't escape `uploads/`.
+
+**Cancelling.** `run(...)` returns a `RunHandle`. Call `handle.cancel()` when the user presses stop, or sends a message that supersedes the current one.
+
+- The run stops at the next safe point: before its next model call or tool call.
+- Its thread is interrupted, so a blocking tool, model call or `ask_human` wait ends early too.
+- It finishes through `onResult` with `TerminationReason.CANCELLED` and whatever answer it had, and that turn is still saved to the conversation.
+- With `runAndWait`, interrupting the calling thread does the same.
+
+**Choosing models.** Set a default `RouterConfig` per agent with `AgentProfile.builder().routerConfig(...)`, or in an `Agent`'s front matter. Override it per run with `LoopRequest.builder().routerConfig(...)`. That's how you run chat on a cheap model and contract drafting on a strong one, or pin a provider per tenant. The loop keeps your choices and adds only what its own calls need: tool support where tools are offered, and cost-optimized ordering for its internal plan check.
 
 ### Shaping agent behavior: `AgentProfile`
 
@@ -218,6 +264,42 @@ loop.run(LoopRequest.builder()
 ```
 
 A present result is fed back to the model as that call's tool result and the run carries on; `Optional.empty()` ends the run via `onError` with an `UnregisteredToolException`. The default (`UnregisteredToolHandler.NONE`) resolves nothing.
+
+### Policy around tool calls: `ToolInterceptor`
+
+One hook sees every tool call before and after it runs. Use it for whatever your product needs, without the library choosing for you: approvals for payments, an audit log, redaction of personal data, per-tenant rate limits.
+
+```java
+AgentLoop.builder().toolInterceptor(new ToolInterceptor() {
+    @Override
+    public ToolDecision before(ToolCall call, ToolContext context) {
+        if (isPayment(call) && !approvals.ask(context.scope(), call)) {     // may block; runs on the run's thread
+            return ToolDecision.refuse("The user declined this payment");    // the model is told, and carries on
+        }
+        return ToolDecision.proceed();     // or proceedWith(newArguments), or respond("result without running it")
+    }
+
+    @Override
+    public String after(ToolCall call, String result, ToolContext context) {
+        audit.record(context.scope(), call.getName(), call.getArguments());
+        return redactor.redact(result);    // what the model sees
+    }
+})
+```
+
+- **Order.** Interceptors run in the order added: `before` in order, `after` in reverse.
+- **Coverage.** Registered tools and caller-resolved unregistered tools. Not the loop's own `report_complete` and `spawn_sub_task`.
+- **Failures.** `failed(...)` is called when a tool throws something that ends the run.
+- **Delegated agents.** Loops made with `withTools(...)`, and so every agent on an `AgentRuntime`, keep the base loop's interceptors.
+
+### Tool timeouts
+
+Each tool call has a time limit. The default is 5 minutes; change it with `AgentLoop.builder().toolTimeout(...)`, or per tool with `registeredTool.withTimeout(...)`.
+
+- **What happens on timeout.** The call is interrupted and the model is told it timed out (`"Error: ... didn't finish within ..."`), so it can try something else.
+- **Run limit.** A run's `maxDuration` also cuts a long tool call short, and the run then stops with `TIME_LIMIT_REACHED`.
+- **Tools that wait.** `ask_human` and `delegate_to_agent` legitimately wait, so they come with long timeouts of their own: 24 hours and 1 hour.
+- **Limitation.** A tool that ignores interrupts can't be forcibly stopped.
 
 ### Reading the result: `AgentLoopResult`
 
@@ -318,7 +400,8 @@ Every tool is a `RegisteredTool`: register it on a `ToolRegistry` (`register`/`r
 | Tools | Package / factory | Needs |
 |---|---|---|
 | `memory_save`, `memory_search`, `memory_forget` | `tool.builtin.MemoryTools.all()` | a `MemoryStore` |
-| `workspace_list`, `_read`, `_write`, `_edit`, `_delete`, `_search` | `tool.builtin.WorkspaceTools.all()` | a `Workspace` |
+| `workspace_list`, `_read`, `_write`, `_edit`, `_delete`, `_search`, `_view` (show an image/PDF to the model) | `tool.builtin.WorkspaceTools.all()` | a `Workspace` |
+| `document_read` (text of PDF, Word, PowerPoint files, paged) | `tool.office.DocumentTools.all()` | a `Workspace` |
 | `current_datetime`, `date_calculate` (business days too), `calculate` (exact decimal) | `tool.builtin.UtilityTools.all()` | — |
 | `data_query` (filter/group/aggregate CSV or JSON, save results) | `tool.builtin.DataTools.all()` | a `Workspace` |
 | `ask_human` | `tool.builtin.HumanTools.askHuman(handler)` | your handler that reaches the user |
@@ -682,6 +765,7 @@ Agent agent = Agent.builder(definition).skills(payroll, Skills.spreadsheets()).b
 - **`ApiAuth`.** Any authentication scheme for `api_request`: return the headers and/or query parameters to add for a given `Scope`.
 - **`HumanTools.Handler`.** How `ask_human` reaches your user, and how long it waits.
 - **`AgentDelegate`.** Delegate to anything: a remote agent service, a queue a human team works from.
+- **`ConversationStore`.** Where chat sessions' turns live: `load(scope)` returns the session's messages, oldest first, and `append(scope, messages)` adds to the end. The scope is the full tenant/user/session, so key storage by `scope.key()`.
 - **`MemoryStore`, `Workspace`.** Covered above.
 
 ## Learn more

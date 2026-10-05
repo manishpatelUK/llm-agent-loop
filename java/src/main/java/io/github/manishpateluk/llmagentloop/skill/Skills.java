@@ -6,6 +6,7 @@ import io.github.manishpateluk.llmagentloop.tool.builtin.HumanTools;
 import io.github.manishpateluk.llmagentloop.tool.builtin.MemoryTools;
 import io.github.manishpateluk.llmagentloop.tool.builtin.UtilityTools;
 import io.github.manishpateluk.llmagentloop.tool.builtin.WorkspaceTools;
+import io.github.manishpateluk.llmagentloop.tool.office.DocumentTools;
 import io.github.manishpateluk.llmagentloop.tool.office.SpreadsheetTools;
 import io.github.manishpateluk.llmagentloop.tool.web.SearchProvider;
 import io.github.manishpateluk.llmagentloop.tool.web.WebFetchOptions;
@@ -31,15 +32,19 @@ public final class Skills {
                 """, MemoryTools.all());
     }
 
-    /** A persistent file area for documents. Needs a {@code Workspace} configured. */
+    /** A persistent file area for documents, including reading what the user uploads. Needs a {@code Workspace} configured. */
     public static Skill files() {
-        return new Skill("Files", "Draft, keep and revise documents in the user's workspace.", """
+        List<RegisteredTool> tools = new ArrayList<>(WorkspaceTools.all());
+        tools.addAll(DocumentTools.all());
+        return new Skill("Files", "Draft, keep and revise documents in the user's workspace, and read what they upload.", """
                 - Put substantial outputs (documents, reports, plans, data) in workspace files rather than only in
                   the chat, and tell the user the file's path.
                 - Use clear folder/file names, e.g. "legal/nda-acme-draft.md".
                 - To change part of a file, use workspace_edit rather than rewriting it. Read before you edit.
                 - Check what already exists with workspace_list before creating something that may already be there.
-                """, WorkspaceTools.all());
+                - Files the user attaches are saved under uploads/. Read PDFs, Word and PowerPoint files with
+                  document_read; look at images and scanned documents with workspace_view.
+                """, tools);
     }
 
     /** Building and editing Excel workbooks. Needs a {@code Workspace} configured. */

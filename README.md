@@ -4,7 +4,7 @@ A library that provides the recursive "agent loop" needed to turn a single reque
 completed task by repeatedly calling an LLM, using tools, and adapting to failures along the
 way. It sits on top of [`llm-router`](https://github.com/manishpatelUK/llm-router) for the
 actual provider/model calls, and is meant to be the reusable core underneath many different
-kinds of agents — from a chatbot backend to a fully autonomous "digital cofounder" that handles
+kinds of agents — from a chatbot backend to a fully autonomous business assistant that handles
 tasks across admin, legal, and software development.
 
 This is a multi-language project - one folder for each implementation, e.g. [java/](java/).
@@ -52,7 +52,7 @@ At a high level, one invocation of the looper:
    planning guidance, operating context, and a hard step-count cap — which gets serialized into
    the system instructions for every LLM call made during that run. This profile is intentionally
    generic so it can describe anything from a narrow support chatbot to a broad, autonomous
-   cofounder-style agent.
+   general-purpose business agent.
 7. **Runs reusable agents.** An agent can be defined as Markdown plus skills and tools, then run
    for any number of users: each run's scope selects that user's memory and files, so one
    definition safely serves a whole multi-user product.
@@ -81,13 +81,14 @@ Implemented so far (Java):
     fully-assembled `LlmRouter` (e.g. one with its own `RequestInterceptor` for something other
     than compression) and want no factory logic in the way; they do nothing with compression
     automatically.
-  - `LoopRequest` carries the prompt, an optional `AgentProfile`, optional `File` attachments, and
-    the run's three async callbacks: `onResult` (an `AgentLoopResult` — the final `llm-router`
+  - `LoopRequest` carries the prompt, an optional `AgentProfile`, optional attachments
+    (`InputFile`s, from bytes or streams), optional chat history and `RouterConfig`, and the run's
+    three async callbacks: `onResult` (an `AgentLoopResult` — the final `llm-router`
     `Response` plus the full `Execution` trace), `onError`, and `onMessage` — status updates
     (`AgentMessage`: an execution id, a thread number, a `MessageType`, a message body, a
     timestamp, and free-form metadata) meant for things like a "thinking..." indicator on a
-    frontend. Usage is always async — `run` returns immediately and the work happens on a virtual
-    thread, reporting back entirely through those callbacks.
+    frontend. `run` returns immediately with a `RunHandle` (to cancel the run) and the work happens
+    on a virtual thread, reporting back through those callbacks; `runAndWait` blocks instead.
   - `AgentProfile.planMode` (see `PlanMode`) picks the run's shape: `NEVER_PLAN` bypasses the loop
     for a single one-shot call; `ALWAYS_PLAN` generates an explicit `Plan` (via structured output)
     and executes its steps in order; `RECURSIVE_ON_EACH_STEP` has no upfront plan — each step
@@ -118,7 +119,7 @@ Implemented so far (Java):
     `Execution.terminationReason()` (`COMPLETED` / `COST_LIMIT_REACHED` / `TIME_LIMIT_REACHED`) on
     the result records what happened. The check applies globally across the whole run — a bound
     crossed inside a sub-task or a plan step stops everything, not just that branch.
-  - File attachments are read once per run and the same `Attachment`s reused, unchanged, on every
+  - Attachments are prepared once per run and the same `Attachment`s reused, unchanged, on every
     call the run makes — which, combined with reusing the same `LlmRouter` instance throughout,
     is exactly what `llm-router` 1.0.2+ needs to deduplicate repeat file uploads by content hash
     (via each provider's own Files API) instead of re-embedding the same bytes every turn. Nothing
@@ -135,6 +136,13 @@ Implemented so far (Java):
   - Every call that offers tools sets `llm-router` 1.0.5's `requiredFeatures(TOOLS)`, so it only
     routes to models that can call tools, rather than having them (and the loop's own
     `report_complete`) silently stripped.
+- **Chat-product essentials.**
+  - **Conversation history.** Through a `ConversationStore` keyed by the session's scope, or passed explicitly per request.
+  - **Attachments in any format.** Images and PDFs go to the model directly, small text files inline. All are saved under `uploads/` in the workspace by default, with an opt-out, so tools can work on them.
+  - **Cancellation.** `RunHandle.cancel()` interrupts blocking work and finishes the run with `CANCELLED`.
+  - **Model choice.** A `RouterConfig` per agent, in front matter or code, or per request.
+  - **`ToolInterceptor`.** Before/after hooks on every tool call, for approvals, audit logs, redaction or rate limits.
+  - **Per-tool timeouts.** Overrunning tools are interrupted, and the model is told.
 - **Reusable agents: scope, memory, workspace, and tool context** — one `AgentLoop` can serve
   every user of a multi-user product. Each run carries a `Scope` (opaque tenant/user/session ids
   from the implementor; a private throwaway scope when omitted), and long-term memory
@@ -163,7 +171,9 @@ Implemented so far (Java):
   `files()`, `spreadsheets()`, `dataAnalysis()`, `web(...)`, `askingTheUser(...)`.
 - **Built-in tools**, each reporting fixable problems back to the model rather than ending the run:
   - `MemoryTools` (`memory_save`/`search`/`forget`) and `WorkspaceTools`
-    (`workspace_list`/`read`/`write`/`edit`/`delete`/`search`);
+    (`workspace_list`/`read`/`write`/`edit`/`delete`/`search`, plus `workspace_view` to show an
+    image or PDF to the model); `DocumentTools` — `document_read` (text of PDF, Word and PowerPoint
+    files, via PDFBox and POI);
   - `UtilityTools` — `current_datetime`, `date_calculate` (incl. business days) and `calculate`
     (exact decimal arithmetic, so money comes out to the penny); `DataTools` — `data_query`
     (filter/group/aggregate CSV or JSON in the workspace, with lenient number parsing);
@@ -203,9 +213,12 @@ Implemented so far (Java):
     `llm-router` treats that like any other in-attempt failure and falls back to the next
     candidate, which may have a larger context window and need no compression at all.
 
+See [ROADMAP.md](ROADMAP.md) for what's planned next.
+
 ## Structure
 
 - [`java/`](java/) — Java implementation (Java 25+), built with Maven, depending on
   [`llm-router`](https://github.com/manishpatelUK/llm-router) 1.0.5+ from Maven Central, Jackson 3
-  (`tools.jackson.*`) for its own JSON handling, jsoup (HTML to text for `web_fetch`) and Apache
-  POI (spreadsheets), with POI's logging bridged to SLF4J. All permissively licensed (MIT/Apache 2.0).
+  (`tools.jackson.*`) for its own JSON handling, jsoup (HTML to text for `web_fetch`), Apache
+  POI (spreadsheets, Word/PowerPoint reading) and PDFBox (PDF reading), with their logging bridged
+  to SLF4J. All permissively licensed (MIT/Apache 2.0).

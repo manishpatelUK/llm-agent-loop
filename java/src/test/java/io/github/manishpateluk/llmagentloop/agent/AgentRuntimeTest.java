@@ -89,7 +89,7 @@ class AgentRuntimeTest {
         RegisteredTool own = new RegisteredTool(
                 ToolDefinition.builder().name("crm_find").description("Agent's own tool").parameters(Map.of("type", "object")).build(),
                 (args, context) -> "found");
-        Agent agent = Agent.builder("---\nname: cofounder\nplan_mode: recursive\n---\nYou are the cofounder.")
+        Agent agent = Agent.builder("---\nname: assistant\nplan_mode: recursive\n---\nYou are the assistant.")
                 .skills(Skills.memory(), Skills.spreadsheets())
                 .tool(own)
                 .build();
@@ -99,7 +99,7 @@ class AgentRuntimeTest {
 
         assertThat(result.finalResponse().getContent()).isEqualTo("done");
         Request sent = requests.getFirst();
-        assertThat(sent.getSystemInstructions()).startsWith("You are the cofounder.").contains("### Memory", "### Spreadsheets");
+        assertThat(sent.getSystemInstructions()).startsWith("You are the assistant.").contains("### Memory", "### Spreadsheets");
         assertThat(sent.getTools()).extracting(ToolDefinition::getName).contains(
                 "company_lookup", "crm_find", "memory_save", "spreadsheet_create", "workspace_write", "report_complete");
     }
@@ -122,7 +122,7 @@ class AgentRuntimeTest {
     @Test
     void agentsDelegateToEachOtherOnTheSameRuntimeAndScope() {
         Agent legal = Agent.builder("---\nname: legal\ndescription: Contract review\nplan_mode: recursive\n---\nYou review contracts.").build();
-        Agent cofounder = Agent.builder("---\nname: cofounder\nplan_mode: recursive\n---\nYou are the cofounder.")
+        Agent assistant = Agent.builder("---\nname: assistant\nplan_mode: recursive\n---\nYou are the assistant.")
                 .delegateTo(legal).build();
 
         responder = request -> {
@@ -135,11 +135,42 @@ class AgentRuntimeTest {
                     : complete("Legal says: " + last);
         };
 
-        AgentLoopResult result = runtime.runAndWait(cofounder, "check the NDA", ALICE);
+        AgentLoopResult result = runtime.runAndWait(assistant, "check the NDA", ALICE);
 
         assertThat(result.finalResponse().getContent()).isEqualTo("Legal says: Clause 4 is risky.");
         assertThat(requests.getFirst().getTools()).anyMatch(t -> t.getName().equals("delegate_to_agent")
                 && t.getDescription().contains("legal: Contract review"));
+    }
+
+    @Test
+    void asyncRunsReturnAHandleThatCancelsThem() throws InterruptedException {
+        java.util.concurrent.CountDownLatch toolStarted = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<AgentLoopResult> result = new java.util.concurrent.atomic.AtomicReference<>();
+        RegisteredTool slow = new RegisteredTool(
+                ToolDefinition.builder().name("slow").description("x").parameters(Map.of("type", "object")).build(),
+                (args, context) -> {
+                    toolStarted.countDown();
+                    try {
+                        Thread.sleep(60_000);
+                    } catch (InterruptedException e) {
+                        throw new IllegalStateException(e);
+                    }
+                    return "never";
+                });
+        Agent agent = Agent.builder("---\nname: worker\nplan_mode: recursive\n---\nWork.").tool(slow).build();
+        responder = request -> toolCall("slow", Map.of());
+
+        io.github.manishpateluk.llmagentloop.RunHandle handle = runtime.run(agent, "go", ALICE, r -> {
+            result.set(r);
+            done.countDown();
+        }, e -> done.countDown());
+        assertThat(toolStarted.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        handle.cancel();
+
+        assertThat(done.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        assertThat(result.get().execution().terminationReason())
+                .isEqualTo(io.github.manishpateluk.llmagentloop.execution.TerminationReason.CANCELLED);
     }
 
     @Test

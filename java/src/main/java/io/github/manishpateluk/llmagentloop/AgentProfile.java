@@ -1,6 +1,7 @@
 package io.github.manishpateluk.llmagentloop;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.manishpateluk.llmrouter.config.RouterConfig;
 import lombok.Builder;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.json.JsonMapper;
@@ -16,13 +17,16 @@ import java.util.List;
  * @param planningGuidance domain-specific planning tips fed to the planning LLM call, if one happens
  * @param goals            the agent's standing goals — distinct from a single run's prompt
  * @param operatingContext free-text description of where/how this agent operates
- *                         (e.g. "the finance cofounder agent for Acme Inc, operating under UK company law")
+ *                         (e.g. "the finance assistant for Acme Inc, operating under UK company law")
  * @param maxSteps         hard cap on total steps taken across a run, all threads combined.
  *                         Any value &le; 0 falls back to {@link #DEFAULT_MAX_STEPS} — there is
  *                         deliberately no way to request "unbounded".
  * @param instructions     free-form Markdown describing how the agent behaves — typically an
  *                         {@code Agent}'s definition plus its skills' guidance. Placed verbatim at
  *                         the top of the system instructions, ahead of the structured profile.
+ * @param routerConfig     how this agent's model calls are routed by default — e.g. a cheap model for a
+ *                         chat agent, a strong one for drafting contracts, or a provider pinned per
+ *                         tenant. {@code LoopRequest.routerConfig} overrides it per run. Not shown to the model.
  */
 @Builder
 public record AgentProfile(
@@ -31,7 +35,8 @@ public record AgentProfile(
         List<String> goals,
         String operatingContext,
         int maxSteps,
-        @JsonIgnore String instructions) {
+        @JsonIgnore String instructions,
+        @JsonIgnore RouterConfig routerConfig) {
 
     /** Used when a run's {@link LoopRequest#agentProfile()} is {@code null}. */
     public static final AgentProfile DEFAULT = AgentProfile.builder().build();

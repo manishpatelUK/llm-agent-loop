@@ -7,6 +7,7 @@ import io.github.manishpateluk.llmagentloop.tool.ToolSchemas;
 import io.github.manishpateluk.llmagentloop.tool.ToolArguments;
 import io.github.manishpateluk.llmagentloop.tool.ToolContext;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -24,6 +25,13 @@ import java.util.Optional;
 public final class HumanTools {
 
     public static final String ASK_HUMAN = "ask_human";
+
+    /**
+     * {@code ask_human}'s own tool timeout: long, because the handler decides how long to wait for
+     * the user (return {@code Optional.empty()} to give up sooner). The run's {@code maxDuration}
+     * still applies.
+     */
+    public static final Duration TIMEOUT = Duration.ofHours(24);
 
     private HumanTools() {
     }
@@ -70,6 +78,6 @@ public final class HumanTools {
                     return answer != null && answer.isPresent() && !answer.get().isBlank()
                             ? "The user answered: " + answer.get()
                             : "The user did not answer. Continue using your best judgement, and state any assumptions you make.";
-                });
+                }, TIMEOUT);
     }
 }

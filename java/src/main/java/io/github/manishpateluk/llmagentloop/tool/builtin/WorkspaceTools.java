@@ -38,6 +38,10 @@ public final class WorkspaceTools {
     public static final String EDIT = "workspace_edit";
     public static final String DELETE = "workspace_delete";
     public static final String SEARCH = "workspace_search";
+    public static final String VIEW = "workspace_view";
+
+    /** Largest file {@code workspace_view} will show the model. */
+    static final int MAX_VIEW_BYTES = 20 * 1024 * 1024;
 
     /** Default and maximum characters {@code workspace_read} returns per call, so one big file can't flood the context window. */
     static final int DEFAULT_READ_CHARS = 20_000;
@@ -51,7 +55,7 @@ public final class WorkspaceTools {
     }
 
     public static List<RegisteredTool> all() {
-        return List.of(list(), read(), write(), edit(), delete(), search());
+        return List.of(list(), read(), write(), edit(), delete(), search(), view());
     }
 
     public static RegisteredTool list() {
@@ -211,6 +215,29 @@ public final class WorkspaceTools {
                     }
                     String result = String.join("\n", matches);
                     return truncated ? result + "\n[Stopped at " + MAX_SEARCH_MATCHES + " matches; narrow the query or prefix.]" : result;
+                });
+    }
+
+    public static RegisteredTool view() {
+        return tool(VIEW,
+                "Look at an image or PDF in the workspace yourself — a photo, screenshot, chart, or scanned "
+                        + "document — rather than reading extracted text. It becomes visible to you from your next "
+                        + "step on (if the current model supports images/files).",
+                ToolSchemas.object(List.of("path"),
+                        "path", ToolSchemas.string("Workspace path of an image (PNG, JPEG, GIF, WebP) or PDF.")),
+                (args, context) -> {
+                    WorkspaceFile file = context.workspace().require(ToolArguments.requireString(args, "path"));
+                    String type = file.mediaType().toLowerCase(Locale.ROOT);
+                    if (!type.startsWith("image/") && !type.equals("application/pdf")) {
+                        throw new ToolInputException(file.path() + " is " + file.mediaType()
+                                + "; only images and PDFs can be viewed (use workspace_read or document_read for text)");
+                    }
+                    if (file.size() > MAX_VIEW_BYTES) {
+                        throw new ToolInputException(file.path() + " is too large to view (" + file.size() + " bytes; limit "
+                                + MAX_VIEW_BYTES + ")");
+                    }
+                    context.showToModel(file);
+                    return "You can now see " + file.path() + " directly.";
                 });
     }
 

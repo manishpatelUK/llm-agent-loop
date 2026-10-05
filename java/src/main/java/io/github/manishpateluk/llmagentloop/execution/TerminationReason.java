@@ -10,5 +10,8 @@ public enum TerminationReason {
     COST_LIMIT_REACHED,
 
     /** Stopped early: {@code LoopRequest.maxDuration} was met or exceeded. */
-    TIME_LIMIT_REACHED
+    TIME_LIMIT_REACHED,
+
+    /** Stopped early: the caller cancelled the run ({@code RunHandle.cancel()}, or by interrupting a {@code runAndWait} thread). */
+    CANCELLED
 }

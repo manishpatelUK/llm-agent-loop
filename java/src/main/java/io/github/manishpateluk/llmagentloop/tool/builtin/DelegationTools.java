@@ -7,6 +7,7 @@ import io.github.manishpateluk.llmagentloop.tool.ToolSchemas;
 import io.github.manishpateluk.llmagentloop.tool.ToolArguments;
 import io.github.manishpateluk.llmagentloop.tool.ToolInputException;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +25,9 @@ public final class DelegationTools {
 
     public static final String DELEGATE = "delegate_to_agent";
     public static final int MAX_DEPTH = 3;
+
+    /** {@code delegate_to_agent}'s own tool timeout: the delegated agent has its own step and time limits too. */
+    public static final Duration TIMEOUT = Duration.ofHours(1);
 
     private static final Pattern NAME = Pattern.compile("^[a-zA-Z0-9_-]{1,64}$");
 
@@ -74,6 +78,6 @@ public final class DelegationTools {
                     String task = ToolArguments.requireString(args, "task");
                     context.report(MessageType.PROGRESS, "Delegating to " + name + ": " + task);
                     return ScopedValue.where(DEPTH, depth).call(() -> delegate.run(task, context));
-                });
+                }, TIMEOUT);
     }
 }

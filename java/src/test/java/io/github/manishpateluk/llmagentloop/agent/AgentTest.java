@@ -1,5 +1,9 @@
 package io.github.manishpateluk.llmagentloop.agent;
 
+import com.manishpateluk.llmrouter.config.RouteEntry;
+import com.manishpateluk.llmrouter.config.RouterConfig;
+import com.manishpateluk.llmrouter.config.ThinkingLevel;
+import com.manishpateluk.llmrouter.provider.Provider;
 import io.github.manishpateluk.llmagentloop.AgentProfile;
 import io.github.manishpateluk.llmagentloop.PlanMode;
 import io.github.manishpateluk.llmagentloop.skill.Skill;
@@ -15,26 +19,26 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AgentTest {
 
-    private static final String COFOUNDER = """
+    private static final String DEFINITION = """
             ---
-            name: cofounder
-            description: "A digital cofounder: admin, finance, product"   # quoted, with a colon
+            name: assistant
+            description: "A business assistant: admin, finance, product"   # quoted, with a colon
             plan_mode: always_plan
             max_steps: 40
             ---
 
-            # Cofounder
+            # Assistant
 
             You handle the company's admin end to end. Be concise.
             """;
 
     @Test
     void readsFrontMatterAndKeepsTheBodyVerbatim() {
-        Agent agent = Agent.fromMarkdown(COFOUNDER);
+        Agent agent = Agent.fromMarkdown(DEFINITION);
 
-        assertThat(agent.name()).isEqualTo("cofounder");
-        assertThat(agent.description()).isEqualTo("A digital cofounder: admin, finance, product");
-        assertThat(agent.instructions()).isEqualTo("# Cofounder\n\nYou handle the company's admin end to end. Be concise.");
+        assertThat(agent.name()).isEqualTo("assistant");
+        assertThat(agent.description()).isEqualTo("A business assistant: admin, finance, product");
+        assertThat(agent.instructions()).isEqualTo("# Assistant\n\nYou handle the company's admin end to end. Be concise.");
         AgentProfile profile = agent.profile();
         assertThat(profile.planMode()).isEqualTo(PlanMode.ALWAYS_PLAN);
         assertThat(profile.maxSteps()).isEqualTo(40);
@@ -59,13 +63,59 @@ class AgentTest {
     @Test
     void skillGuidanceIsAppendedAfterTheDefinition() {
         Skill custom = new Skill("Payroll", "UK payroll rules", "Always check the tax year.", List.of());
-        Agent agent = Agent.builder(COFOUNDER).skills(Skills.spreadsheets(), custom).build();
+        Agent agent = Agent.builder(DEFINITION).skills(Skills.spreadsheets(), custom).build();
 
         String instructions = agent.profile().instructions();
-        assertThat(instructions).startsWith("# Cofounder").contains("## Skills", "### Spreadsheets", "Use formulas",
+        assertThat(instructions).startsWith("# Assistant").contains("## Skills", "### Spreadsheets", "Use formulas",
                 "### Payroll\nUK payroll rules\n\nAlways check the tax year.");
-        assertThat(agent.profile().toSystemInstructionsFragment()).startsWith("# Cofounder")
+        assertThat(agent.profile().toSystemInstructionsFragment()).startsWith("# Assistant")
                 .contains("Agent operating profile: {").doesNotContain("\"instructions\"");
+    }
+
+    @Test
+    void frontMatterSetsTheAgentsDefaultRouting() {
+        Agent agent = Agent.fromMarkdown("""
+                ---
+                name: drafter
+                models: anthropic/claude-sonnet-5-5, OpenAI, openrouter/some/model
+                thinking_level: high
+                cost_optimized: yes
+                ---
+                Draft things.
+                """);
+
+        RouterConfig config = agent.profile().routerConfig();
+        assertThat(config.getRoute()).containsExactly(
+                RouteEntry.of(Provider.ANTHROPIC, "claude-sonnet-5-5"),
+                RouteEntry.of(Provider.OPENAI),
+                RouteEntry.of(Provider.OPENROUTER, "some/model"));
+        assertThat(config.getThinkingLevel()).isEqualTo(ThinkingLevel.HIGH);
+        assertThat(config.isCostOptimized()).isTrue();
+    }
+
+    @Test
+    void withoutRoutingKeysTheAgentLeavesRoutingToTheRouter() {
+        assertThat(Agent.fromMarkdown("---\nname: a\n---\nx").profile().routerConfig()).isNull();
+    }
+
+    @Test
+    void anExplicitRouterConfigReplacesFrontMatterRouting() {
+        RouterConfig explicit = RouterConfig.builder().thinkingLevel(ThinkingLevel.LOW).build();
+
+        Agent agent = Agent.builder("---\nname: a\nmodels: openai\n---\nx").routerConfig(explicit).build();
+
+        assertThat(agent.profile().routerConfig()).isSameAs(explicit);
+        assertThat(agent.routerConfig()).isSameAs(explicit);
+    }
+
+    @Test
+    void routingMistakesAreReportedClearly() {
+        assertThatThrownBy(() -> Agent.fromMarkdown("---\nname: a\nmodels: acme-ai/x\n---\nx"))
+                .hasMessageContaining("Unknown provider 'acme-ai'");
+        assertThatThrownBy(() -> Agent.fromMarkdown("---\nname: a\nthinking_level: extreme\n---\nx"))
+                .hasMessageContaining("thinking_level");
+        assertThatThrownBy(() -> Agent.fromMarkdown("---\nname: a\ncost_optimized: maybe\n---\nx"))
+                .hasMessageContaining("cost_optimized");
     }
 
     @Test

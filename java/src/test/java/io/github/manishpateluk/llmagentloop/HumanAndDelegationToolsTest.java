@@ -104,7 +104,7 @@ class HumanAndDelegationToolsTest {
                         }));
 
         List<Request> parentRequests = new CopyOnWriteArrayList<>();
-        AgentLoop cofounder = loop(request -> {
+        AgentLoop assistant = loop(request -> {
             parentRequests.add(request);
             return parentRequests.size() == 1
                     ? toolCall("d1", "delegate_to_agent", Map.of("agent", "legal", "task", "Review clause 4 of the NDA"))
@@ -112,7 +112,7 @@ class HumanAndDelegationToolsTest {
         }, new ToolRegistry().register(DelegationTools.delegateToAgent(List.of(
                 AgentDelegate.of("legal", "Contract and compliance review", legal, RECURSIVE)))));
 
-        Capture capture = run(cofounder, LoopRequest.builder().prompt("check the NDA").agentProfile(RECURSIVE).scope(ALICE));
+        Capture capture = run(assistant, LoopRequest.builder().prompt("check the NDA").agentProfile(RECURSIVE).scope(ALICE));
 
         assertThat(capture.error()).isNull();
         assertThat(capture.result().finalResponse().getContent()).isEqualTo("Legal says clause 4 needs rework.");
