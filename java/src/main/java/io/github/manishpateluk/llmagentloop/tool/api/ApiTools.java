@@ -95,7 +95,7 @@ public final class ApiTools {
                                 "select", ToolSchemas.string("Optional JSON Pointer into the response, e.g. \"/data/0/id\"."),
                                 "save_as", ToolSchemas.string("Optional workspace path to save the raw response body to.")))
                         .build(),
-                (args, context) -> call(client, byName, args, context));
+                (args, context) -> call(client, byName, args, context)).withUntrustedOutput();
     }
 
     private static String call(HttpClient client, Map<String, ApiConnection> byName, Map<String, Object> args, ToolContext context) {

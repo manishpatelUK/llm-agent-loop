@@ -92,7 +92,7 @@ public final class CalendarTools {
                         out.append('\n');
                     }
                     return out.toString().strip();
-                });
+                }).withUntrustedOutput();
     }
 
     public static RegisteredTool create(CalendarService service) {

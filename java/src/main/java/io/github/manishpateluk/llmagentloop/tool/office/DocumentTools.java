@@ -111,7 +111,7 @@ public final class DocumentTools {
                                 "max_chars", ToolSchemas.integer("Maximum characters to return, up to " + MAX_READ_CHARS
                                         + ". Defaults to " + DEFAULT_READ_CHARS + ".")))
                         .build(),
-                DocumentTools::read);
+                DocumentTools::read).withUntrustedOutput();
     }
 
     private static String read(Map<String, Object> args, ToolContext context) {
@@ -161,10 +161,10 @@ public final class DocumentTools {
         return extracted.header() + text.substring(offset, end) + more;
     }
 
-    private record Extracted(String text, String header) {
+    record Extracted(String text, String header) {
     }
 
-    private static Extracted pdf(WorkspaceFile file, String pages) {
+    static Extracted pdf(WorkspaceFile file, String pages) {
         try (PDDocument document = Loader.loadPDF(file.content())) {
             int total = document.getNumberOfPages();
             int first = 1;
@@ -193,7 +193,7 @@ public final class DocumentTools {
         }
     }
 
-    private static String docx(WorkspaceFile file) {
+    static String docx(WorkspaceFile file) {
         try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(file.content()));
              XWPFWordExtractor extractor = new XWPFWordExtractor(document)) {
             return extractor.getText();
@@ -202,7 +202,7 @@ public final class DocumentTools {
         }
     }
 
-    private static String pptx(WorkspaceFile file) {
+    static String pptx(WorkspaceFile file) {
         try (XMLSlideShow show = new XMLSlideShow(new ByteArrayInputStream(file.content()))) {
             StringBuilder out = new StringBuilder();
             List<XSLFSlide> slides = show.getSlides();

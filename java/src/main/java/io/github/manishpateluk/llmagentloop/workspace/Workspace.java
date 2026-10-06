@@ -60,6 +60,11 @@ public interface Workspace {
 
     /** A view of this workspace bound to {@code scope}, enforcing {@code limits} — which is how runs and tools reach it. */
     default ScopedWorkspace scopedTo(Scope scope, WorkspaceLimits limits) {
-        return new ScopedWorkspace(this, scope, limits);
+        return scopedTo(scope, limits, WorkspaceListener.NONE);
+    }
+
+    /** {@link #scopedTo(Scope, WorkspaceLimits)}, telling {@code listener} about every change made through the view. */
+    default ScopedWorkspace scopedTo(Scope scope, WorkspaceLimits limits, WorkspaceListener listener) {
+        return new ScopedWorkspace(this, scope, limits, listener);
     }
 }

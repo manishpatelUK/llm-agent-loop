@@ -76,7 +76,7 @@ public final class WebTools {
                                         + ". Defaults to " + DEFAULT_READ_CHARS + "."),
                                 "save_as", ToolSchemas.string("Optional workspace path to save the downloaded file to, unconverted.")))
                         .build(),
-                (args, context) -> fetch(client, options, args, context));
+                (args, context) -> fetch(client, options, args, context)).withUntrustedOutput();
     }
 
     public static RegisteredTool search(SearchProvider provider) {
@@ -107,7 +107,7 @@ public final class WebTools {
                         }
                     }
                     return out.toString().strip();
-                });
+                }).withUntrustedOutput();
     }
 
     private static String fetch(HttpClient client, WebFetchOptions options, Map<String, Object> args, ToolContext context) {

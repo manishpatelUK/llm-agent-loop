@@ -72,7 +72,7 @@ public final class DataTools {
                                 "limit", ToolSchemas.integer("Maximum rows to return, up to " + MAX_LIMIT + ". Defaults to " + DEFAULT_LIMIT + "."),
                                 "save_as", ToolSchemas.string("Optional workspace path to save the full result to as CSV.")))
                         .build(),
-                DataTools::run);
+                DataTools::run).withUntrustedOutput();
     }
 
     private static String run(Map<String, Object> args, ToolContext context) {

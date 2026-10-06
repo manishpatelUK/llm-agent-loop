@@ -210,7 +210,7 @@ public final class SpreadsheetTools {
                                 "max_rows", ToolSchemas.integer("Maximum rows to show, up to " + MAX_READ_ROWS + ". Defaults to " + DEFAULT_READ_ROWS + "."),
                                 "show_formulas", ToolSchemas.bool("Show formulas rather than their values. Defaults to false.")))
                         .build(),
-                SpreadsheetTools::read);
+                SpreadsheetTools::read).withUntrustedOutput();
     }
 
     private static String read(Map<String, Object> args, ToolContext context) {

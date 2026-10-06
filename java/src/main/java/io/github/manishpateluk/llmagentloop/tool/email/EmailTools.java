@@ -105,7 +105,7 @@ public final class EmailTools {
                         out.append('\n');
                     }
                     return out.toString().strip();
-                });
+                }).withUntrustedOutput();
     }
 
     public static RegisteredTool read(EmailService service) {
@@ -140,7 +140,7 @@ public final class EmailTools {
                         out.append("Attachments: ").append(String.join(", ", message.attachmentNames())).append('\n');
                     }
                     return out.append('\n').append(body).toString();
-                });
+                }).withUntrustedOutput();
     }
 
     private static Map<String, Object> composeSchema() {

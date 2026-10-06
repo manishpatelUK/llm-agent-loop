@@ -10,7 +10,8 @@ import java.util.UUID;
 /**
  * One metered model call.
  *
- * @param executionId  the run that made it
+ * @param executionId  the run that made it; {@code null} for calls outside a run (e.g. background
+ *                     or on-demand indexing that no single run triggered)
  * @param scope        the run's full scope — whose usage this is (tenant, user, session)
  * @param purpose      what the call was for
  * @param provider     which provider served it; {@code null} if unknown
@@ -24,7 +25,6 @@ public record UsageRecord(UUID executionId, Scope scope, UsagePurpose purpose, P
                           long inputTokens, long outputTokens, long costUsdCents, Instant at) {
 
     public UsageRecord {
-        Objects.requireNonNull(executionId, "executionId");
         Objects.requireNonNull(scope, "scope");
         Objects.requireNonNull(purpose, "purpose");
         Objects.requireNonNull(at, "at");

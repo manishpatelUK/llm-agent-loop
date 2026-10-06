@@ -10,9 +10,11 @@ far. Remove an item once it ships (and record it in the README's Status section)
   free/busy for other attendees (RFC 6638 scheduling).
 - **Richer documents.** Images in Word/PDF/PowerPoint output, embedded fonts for non-Latin scripts in
   PDFs, real Word list numbering and heading styles, 16:9 slide layouts, and more chart types.
-- **Semantic search over the user's own material.** Memory search is keyword-only and
-  `workspace_search` is substring matching. Add an embeddings interface and use it for memory recall
-  and for "find what we agreed with Acme" across workspace documents.
+- **More from semantic search.** Shipped: embeddings, indexing modes, `knowledge_search`, hybrid
+  memory. Still to do: ready-made production `VectorIndex`es (pgvector first), embedding prices in
+  `llm-router` (recorded as 0 cents today), reranking, OCR so scanned PDFs and images become
+  searchable, spreadsheet indexing, and searching tenant-wide and user-level knowledge together
+  (see "Layered knowledge" below).
 - **Background, scheduled and resumable work.** Runs live on in-process virtual threads: nothing
   survives a restart, nothing runs on a schedule, and a run waiting in `ask_human` is lost on
   redeploy. Needs a persistent task queue, a scheduler interface, and checkpoints so a waiting run
@@ -26,16 +28,14 @@ far. Remove an item once it ships (and record it in the README's Status section)
 
 ## Product polish and operations
 
-- **Testing kit.** Publish a fake `ProviderAdapter` and scripted-response helpers (like the ones in
-  this repo's tests) so implementors can test their agents without calling real models.
 - **Parallel execution.** Tool calls in one response, a plan's `parallelGroup` steps and sub-tasks
   all run sequentially today.
 - **"Thread" terminology.** Plan steps all record the same thread number, while sub-tasks get new
   ones; the term is doing double duty (reasoning branch vs. plan step). Settle it before parallel
   execution makes the trace ambiguous.
-- **Prompt-injection hardening.** Content from web pages, MCP servers and uploaded documents is only
-  *described* as untrusted (in skill guidance). Mark tool results as data in the prompt structure and
-  optionally screen them.
+- **Prompt-injection hardening, next steps.** Labelling, taint tracking, `UntrustedContentGuard` and
+  `ContentScreener` ship. Still to do: a ready-made screener (e.g. a small classifier model through
+  `llm-router`), and per-tool trust levels for implementor-owned APIs that don't need labelling.
 
 ## Known limitations
 
@@ -45,7 +45,11 @@ far. Remove an item once it ships (and record it in the README's Status section)
 - `llm-router` drops *all* of a request's attachments when the chosen model can't take *one* of them
   (e.g. a PDF sent to a model with vision but no file input also loses the images). A `WARNING`
   status message now says when it happens, and attachments stay saved and described so tools can
-  recover; dropping only the unsupported ones belongs in `llm-router`.
+  recover. `LoopRequest.requireAttachmentSupport(true)` skips such models instead, and fails if none
+  remain. Dropping only the unsupported attachments belongs in `llm-router`.
+- Memory embedding usage is billed to the memory's scope with no execution id, so it doesn't appear
+  in a run's `result.usage()`. Workspace indexing done during a run does appear there.
+- `InMemoryVectorIndex` searches by brute force, which is fine up to tens of thousands of passages.
 - A tool that ignores thread interrupts can't be stopped by its timeout or by cancellation.
 
 - `web_fetch`'s private-network check can be bypassed by DNS rebinding; deployments that need a hard

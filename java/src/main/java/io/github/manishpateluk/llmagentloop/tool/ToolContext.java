@@ -3,10 +3,12 @@ package io.github.manishpateluk.llmagentloop.tool;
 import io.github.manishpateluk.llmagentloop.MessageType;
 import io.github.manishpateluk.llmagentloop.Scope;
 import io.github.manishpateluk.llmagentloop.memory.ScopedMemory;
+import io.github.manishpateluk.llmagentloop.search.KnowledgeSearch;
 import io.github.manishpateluk.llmagentloop.workspace.ScopedWorkspace;
 import io.github.manishpateluk.llmagentloop.workspace.WorkspaceFile;
 
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -43,6 +45,16 @@ public record ToolContext(
         void report(MessageType type, String message);
 
         void showToModel(WorkspaceFile file);
+
+        /** Where the run has read outside content from so far; empty if it hasn't. */
+        default Set<String> untrustedSources() {
+            return Set.of();
+        }
+
+        /** Semantic search over the run's workspace; {@link KnowledgeSearch#NONE} if it isn't configured. */
+        default KnowledgeSearch knowledge() {
+            return KnowledgeSearch.NONE;
+        }
     }
 
     public ToolContext {
@@ -70,5 +82,23 @@ public record ToolContext(
      */
     public void showToModel(WorkspaceFile file) {
         run.showToModel(Objects.requireNonNull(file, "file"));
+    }
+
+    /**
+     * Where this run has read outside content from so far — tools marked {@code untrustedOutput}
+     * (e.g. {@code web_fetch}, {@code email_read}) and attachments. Empty if it hasn't. Interceptors
+     * use it to treat high-impact actions more carefully once instructions could have been injected
+     * (see {@code UntrustedContentGuard}).
+     */
+    public Set<String> untrustedSources() {
+        return run.untrustedSources();
+    }
+
+    /**
+     * Semantic search over this run's workspace files, bound to its scope — see
+     * {@code SemanticSearch}. Searching fails with a clear message if semantic search isn't configured.
+     */
+    public KnowledgeSearch knowledge() {
+        return run.knowledge();
     }
 }

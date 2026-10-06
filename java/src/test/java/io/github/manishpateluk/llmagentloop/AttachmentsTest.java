@@ -48,7 +48,8 @@ class AttachmentsTest {
         String note = note(sent);
         assertThat(note).contains("4 file(s)",
                 "receipt.png (image/png, 7 bytes), saved in the workspace at uploads/receipt.png — attached for you to see directly",
-                "sales.csv (text/csv, 22 bytes), saved in the workspace at uploads/sales.csv:\n```\nregion,amount\nNorth,10\n```",
+                "sales.csv (text/csv, 22 bytes), saved in the workspace at uploads/sales.csv:\n[[untrusted-content ",
+                "source=attachment sales.csv]]\n```\nregion,amount\nNorth,10\n```\n[[end untrusted-content ",
                 "model.xlsx", "uploads/model.xlsx");
         assertThat(result.changedFiles()).containsExactly(
                 "uploads/receipt.png", "uploads/contract.pdf", "uploads/sales.csv", "uploads/model.xlsx");
@@ -65,7 +66,7 @@ class AttachmentsTest {
                 .attachments(List.of(InputFile.of("notes.txt", "hello".getBytes()), InputFile.of("photo.png", PNG))));
 
         assertThat(result.changedFiles()).isEmpty();
-        assertThat(note(model.requests.getFirst())).contains("notes.txt (text/plain, 5 bytes):\n```\nhello\n```")
+        assertThat(note(model.requests.getFirst())).contains("notes.txt (text/plain, 5 bytes):\n[[untrusted-content", "```\nhello\n```")
                 .doesNotContain("saved in the workspace");
         assertThat(model.requests.getFirst().getAttachments()).hasSize(1);
     }

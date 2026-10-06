@@ -108,7 +108,7 @@ public final class WorkspaceTools {
                             ? slice + "\n\n[Showing characters " + offset + "-" + end + " of " + text.length()
                                     + "; call again with offset " + end + " for more.]"
                             : slice;
-                });
+                }).withUntrustedOutput();
     }
 
     public static RegisteredTool write() {
@@ -215,7 +215,7 @@ public final class WorkspaceTools {
                     }
                     String result = String.join("\n", matches);
                     return truncated ? result + "\n[Stopped at " + MAX_SEARCH_MATCHES + " matches; narrow the query or prefix.]" : result;
-                });
+                }).withUntrustedOutput();
     }
 
     public static RegisteredTool view() {

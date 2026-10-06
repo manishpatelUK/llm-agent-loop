@@ -142,7 +142,7 @@ public final class McpClient implements AutoCloseable {
                     : tool.description();
             registered.add(new RegisteredTool(
                     ToolDefinition.builder().name(agentName).description(description).parameters(tool.inputSchema()).build(),
-                    (args, context) -> callTool(tool.name(), args)));
+                    (args, context) -> callTool(tool.name(), args)).withUntrustedOutput());
         }
         return registered;
     }

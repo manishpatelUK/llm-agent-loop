@@ -55,6 +55,42 @@ class AttachmentDropWarningTest {
     }
 
     @Test
+    void requiringAttachmentSupportFailsTheRunInsteadOfDroppingThem() throws InterruptedException {
+        AgentLoop loop = model.loop().build();
+        model.respond(request -> text("should not be called"));
+
+        AgentLoopRunSupport.Capture capture = AgentLoopRunSupport.run(loop, LoopRequest.builder()
+                .prompt("What's in this photo?")
+                .agentProfile(RECURSIVE)
+                .requireAttachmentSupport(true)
+                .attachments(List.of(InputFile.of("photo.png", PNG)))
+                .routerConfig(RouterConfig.builder().route(List.of(RouteEntry.of(Provider.ANTHROPIC, TEXT_ONLY))).build()));
+
+        assertThat(capture.result()).isNull();
+        assertThat(capture.error()).isInstanceOf(io.github.manishpateluk.llmrouter.error.RouterExhaustedException.class)
+                .hasMessageContaining(TEXT_ONLY);
+        assertThat(model.requests).isEmpty();
+    }
+
+    @Test
+    void requiringAttachmentSupportStillRoutesToAModelThatCanTakeThem() throws InterruptedException {
+        AgentLoop loop = model.loop().build();
+        model.respond(request -> text("A photo of a cat."));
+
+        AgentLoopRunSupport.Capture capture = AgentLoopRunSupport.run(loop, LoopRequest.builder()
+                .prompt("What's in this photo?")
+                .agentProfile(RECURSIVE)
+                .requireAttachmentSupport(true)
+                .attachments(List.of(InputFile.of("photo.png", PNG)))
+                .routerConfig(RouterConfig.builder().route(List.of(
+                        RouteEntry.of(Provider.ANTHROPIC, TEXT_ONLY), RouteEntry.of(Provider.ANTHROPIC, ScriptedModel.MODEL))).build()));
+
+        assertThat(capture.error()).isNull();
+        assertThat(model.requests.getFirst().getAttachments()).hasSize(1);
+        assertThat(capture.result().finalResponse().getModelUsed()).isEqualTo(ScriptedModel.MODEL);
+    }
+
+    @Test
     void noWarningWhenTheModelTakesThem() throws InterruptedException {
         AgentLoop loop = model.loop().build();
         model.respond(request -> text("A chart."));

@@ -33,12 +33,14 @@ public final class ScopedWorkspace {
     private final Workspace workspace;
     private final Scope scope;
     private final WorkspaceLimits limits;
+    private final WorkspaceListener listener;
     private final Set<String> changedPaths = new LinkedHashSet<>();
 
-    ScopedWorkspace(Workspace workspace, Scope scope, WorkspaceLimits limits) {
+    ScopedWorkspace(Workspace workspace, Scope scope, WorkspaceLimits limits, WorkspaceListener listener) {
         this.workspace = Objects.requireNonNull(workspace, "workspace");
         this.scope = Objects.requireNonNull(scope, "scope");
         this.limits = Objects.requireNonNull(limits, "limits");
+        this.listener = Objects.requireNonNull(listener, "listener");
     }
 
     /**
@@ -127,6 +129,7 @@ public final class ScopedWorkspace {
         WorkspaceFile file = new WorkspaceFile(normalized, type, content, Instant.now());
         workspace.write(scope, file);
         changedPaths.add(normalized);
+        listener.written(file);
         return file;
     }
 
@@ -141,6 +144,7 @@ public final class ScopedWorkspace {
         boolean deleted = workspace.delete(scope, normalized);
         if (deleted) {
             changedPaths.add(normalized);
+            listener.deleted(normalized);
         }
         return deleted;
     }

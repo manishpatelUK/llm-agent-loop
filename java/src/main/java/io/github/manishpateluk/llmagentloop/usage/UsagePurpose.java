@@ -19,5 +19,8 @@ public enum UsagePurpose {
     HISTORY_COMPRESSION,
 
     /** Summarizing a long chat session's older turns in the conversation store. */
-    CONVERSATION_COMPACTION
+    CONVERSATION_COMPACTION,
+
+    /** Embedding text for semantic search: indexing workspace files and memories, and embedding search queries. */
+    EMBEDDING
 }

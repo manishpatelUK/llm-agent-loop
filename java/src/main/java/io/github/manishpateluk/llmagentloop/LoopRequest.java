@@ -30,6 +30,12 @@ import java.util.function.Consumer;
  *                        {@code document_read} can work on them. Defaults to empty.
  * @param saveAttachments optional; {@code false} keeps attachments out of the workspace (they then
  *                        only reach the model directly or as text). Defaults to {@code true}.
+ * @param requireAttachmentSupport optional; {@code true} makes every model call in the run that
+ *                        carries attachments go only to models that can take them, failing the run (via
+ *                        {@code onError}, with a {@code RouterExhaustedException} listing why each
+ *                        candidate was skipped) rather than letting the router drop the attachments.
+ *                        Defaults to {@code false}: incapable models get the call without the attachments,
+ *                        and a {@code WARNING} says so.
  * @param history         optional earlier turns of this conversation, oldest first — for callers
  *                        that keep chat history themselves. When {@code null} (the default) and the
  *                        loop has a {@code ConversationStore} and this request has a {@link #scope()},
@@ -76,6 +82,7 @@ public record LoopRequest(
         AgentProfile agentProfile,
         List<InputFile> attachments,
         Boolean saveAttachments,
+        Boolean requireAttachmentSupport,
         List<Message> history,
         RouterConfig routerConfig,
         Map<String, Object> answerSchema,
@@ -101,6 +108,7 @@ public record LoopRequest(
         Objects.requireNonNull(onError, "onError");
         attachments = attachments == null ? List.of() : List.copyOf(attachments);
         saveAttachments = saveAttachments == null ? Boolean.TRUE : saveAttachments;
+        requireAttachmentSupport = requireAttachmentSupport != null && requireAttachmentSupport;
         history = history == null ? null : List.copyOf(history);
         if (answerSchema != null && !"object".equals(answerSchema.get("type"))) {
             throw new IllegalArgumentException("answerSchema's top level must be {\"type\": \"object\", ...}");
