@@ -146,6 +146,66 @@ class ApiToolsTest {
     }
 
     @Test
+    void aSingleStarMatchesWithinOneSegmentOnlyAndDoubleStarSpansSegments() {
+        ApiConnection crm = connection().allowedPaths("/customers/*", "/reports/**/summary").build();
+
+        assertThat(call(crm, acme, Map.of("connection", "crm", "method", "GET", "path", "/customers/cus_1"))).startsWith("HTTP 200");
+        assertThat(call(crm, acme, Map.of("connection", "crm", "method", "GET", "path", "/reports/2026/q3/summary"))).startsWith("HTTP 200");
+        for (String refused : List.of("/customers/cus_1/notes", "/customers", "/reports/2026/q3/detail", "/customers/cus_1%2Fnotes")) {
+            assertThatThrownBy(() -> call(crm, acme, Map.of("connection", "crm", "method", "GET", "path", refused)))
+                    .as(refused).isInstanceOf(ToolInputException.class).hasMessageContaining("isn't an allowed path");
+        }
+        assertThat(seen).hasSize(2);
+    }
+
+    @Test
+    void encodedDotSegmentsCannotSlipPastAnAllowedPrefix() {
+        ApiConnection crm = connection().allowedPaths("/customers/**").build();
+
+        for (String path : List.of("/customers/%2e%2e/admin", "/customers%2F..%2Fadmin", "/customers/.%2E/admin")) {
+            assertThatThrownBy(() -> call(crm, acme, Map.of("connection", "crm", "method", "GET", "path", path)))
+                    .as(path).isInstanceOf(ToolInputException.class);
+        }
+        assertThat(seen).isEmpty();
+    }
+
+    @Test
+    void allowedMethodsReplacesTheReadOnlyDefault() {
+        ApiConnection crm = connection().allowedMethods("get", "post").build();
+        Map<String, Object> post = Map.of("connection", "crm", "method", "POST", "path", "/customers", "body", "{}");
+
+        assertThat(crm.allowedMethods()).containsExactlyInAnyOrder("GET", "POST");
+        assertThat(call(crm, acme, post)).startsWith("HTTP 200 POST");
+        for (String method : List.of("DELETE", "HEAD")) {
+            assertThatThrownBy(() -> call(crm, acme, Map.of("connection", "crm", "method", method, "path", "/customers")))
+                    .isInstanceOf(ToolInputException.class).hasMessageContaining(method + " isn't allowed");
+        }
+        assertThatThrownBy(() -> connection().allowedMethods("TRACE")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> connection().allowedMethods().build()).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> connection().allowedPaths("customers/**")).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must start with '/'");
+        assertThatThrownBy(() -> connection().maxResponseChars(0)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void badArgumentsFromTheModelAreFixableErrors() {
+        ApiConnection crm = connection().build();
+
+        assertThatThrownBy(() -> call(crm, acme, Map.of("connection", "billing", "method", "GET", "path", "/x")))
+                .isInstanceOf(ToolInputException.class).hasMessageContaining("No connection called 'billing'");
+        assertThatThrownBy(() -> call(crm, acme, Map.of("connection", "crm", "method", "GET", "path", "/customers",
+                "query", "q=1"))).isInstanceOf(ToolInputException.class).hasMessageContaining("list of {name, value}");
+        assertThatThrownBy(() -> call(crm, acme, Map.of("connection", "crm", "method", "GET", "path", "/customers",
+                "query", List.of(Map.of("value", "1"))))).isInstanceOf(ToolInputException.class).hasMessageContaining("needs a 'name' and a 'value'");
+        assertThatThrownBy(() -> call(crm, acme, Map.of("connection", "crm", "method", "GET", "path", "/customers",
+                "select", "data/0"))).isInstanceOf(ToolInputException.class).hasMessageContaining("JSON Pointer");
+        assertThatThrownBy(() -> call(crm, acme, Map.of("connection", "crm", "method", "GET", "path", "/customers",
+                "select", "/data/9/name"))).isInstanceOf(ToolInputException.class).hasMessageContaining("Nothing at '/data/9/name'");
+        assertThatThrownBy(() -> ApiTools.request(List.of())).isInstanceOf(IllegalArgumentException.class);
+        assertThat(seen.size()).isLessThanOrEqualTo(2); // only the select calls reach the server
+    }
+
+    @Test
     void errorStatusesAndRedirectsComeBackAsResults() {
         assertThat(call(connection().build(), acme, Map.of("connection", "crm", "method", "GET", "path", "/customers/missing")))
                 .startsWith("HTTP 404").contains("No such customer");

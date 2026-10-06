@@ -124,4 +124,17 @@ class ScopedWorkspaceTest {
 
         assertThat(workspace.require("f.txt").text()).isEqualTo("original");
     }
+
+    @Test
+    void refusesPathsThatAreTooLongTooDeepOrHaveOversizedSegments() {
+        assertThatThrownBy(() -> ScopedWorkspace.normalize("a/".repeat(200) + "x".repeat(200)))
+                .isInstanceOf(WorkspaceException.class).hasMessageContaining("longer than 512");
+        assertThatThrownBy(() -> ScopedWorkspace.normalize("x".repeat(256) + ".md"))
+                .isInstanceOf(WorkspaceException.class).hasMessageContaining("segment is longer than 255");
+        assertThatThrownBy(() -> ScopedWorkspace.normalize("d/".repeat(33) + "f.md"))
+                .isInstanceOf(WorkspaceException.class).hasMessageContaining("deeper than 32");
+        // Right at the limits is fine.
+        assertThat(ScopedWorkspace.normalize("x".repeat(255))).hasSize(255);
+        assertThat(ScopedWorkspace.normalize("d/".repeat(31) + "f.md")).endsWith("f.md");
+    }
 }

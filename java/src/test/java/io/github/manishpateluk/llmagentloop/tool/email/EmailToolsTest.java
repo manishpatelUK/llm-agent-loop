@@ -132,4 +132,19 @@ class EmailToolsTest {
     private String send(Map<String, Object> args) {
         return EmailTools.send(account).handler().handle(new HashMap<>(args), context);
     }
+
+    @Test
+    void recipientAndBodyLimitsProtectAgainstMassOrOversizedMail() {
+        List<String> many = java.util.stream.IntStream.range(0, 30).mapToObj(i -> "p" + i + "@acme.com").toList();
+        assertThatThrownBy(() -> EmailTools.send(account).handler().handle(new HashMap<>(Map.of(
+                "to", many, "cc", many, "subject", "Hi", "body", "x")), context))
+                .isInstanceOf(ToolInputException.class).hasMessageContaining("At most 50 recipients");
+        assertThatThrownBy(() -> EmailTools.send(account).handler().handle(new HashMap<>(Map.of(
+                "to", List.of("sam@globex.com"), "subject", "Hi", "body", "x".repeat(EmailTools.MAX_BODY_CHARS + 1))), context))
+                .isInstanceOf(ToolInputException.class).hasMessageContaining("attach a document instead");
+        assertThatThrownBy(() -> EmailTools.send(account).handler().handle(new HashMap<>(Map.of(
+                "to", List.of(), "subject", "Hi", "body", "x")), context))
+                .isInstanceOf(ToolInputException.class).hasMessageContaining("at least one address");
+        assertThat(sent).isEmpty();
+    }
 }
