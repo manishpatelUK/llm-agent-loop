@@ -222,7 +222,7 @@ class SemanticSearchTest {
         });
         assertThat(search.index().search(SemanticSearch.WORKSPACE, PARTITION, new float[64], "test/words-64", 100))
                 .hasSizeGreaterThan(1);
-        // Usage outside a run has no execution id and is billed to the partition.
+        // Usage outside a run has no execution id and is billed to the scope it was given.
         assertThat(usage).allSatisfy(record -> {
             assertThat(record.executionId()).isNull();
             assertThat(record.scope()).isEqualTo(PARTITION);
@@ -279,10 +279,17 @@ class SemanticSearchTest {
                 .callTool(MemoryTools.SEARCH, Map.of("query", "residence"))
                 .reply("Leeds.");
         ToolRegistry tools = new ToolRegistry().registerAll(MemoryTools.all());
-        AgentLoop loop = model.loopBuilder().tools(tools).memory(new InMemoryMemoryStore())
+        AgentLoop loop = model.loopBuilder().tools(tools).memory(new InMemoryMemoryStore()).usageMeter(usage::add)
                 .semanticSearch(SemanticSearch.builder().embedder(embedder).build()).build();
-        TestRuns.run(loop, request("Where do I live?"));
+        TestRun run = TestRuns.run(loop, request("Where do I live?"));
         assertThat(toolResult(model, 2)).contains("Moved to Leeds");
+        // Memory embeddings (the save, the search, and each step's automatic recall) are billed to the run.
+        List<UsageRecord> embeddings = usage.stream().filter(r -> r.purpose() == UsagePurpose.EMBEDDING).toList();
+        assertThat(embeddings).hasSizeGreaterThanOrEqualTo(2).allSatisfy(record -> {
+            assertThat(record.executionId()).isEqualTo(run.result().execution().id());
+            assertThat(record.scope()).isEqualTo(SCOPE);
+        });
+        assertThat(run.result().usage().calls()).isEqualTo(usage.size());
 
         MockModel keywordOnly = new MockModel()
                 .callTool(MemoryTools.SAVE, Map.of("content", "Moved to Leeds in May; it has been home since."))

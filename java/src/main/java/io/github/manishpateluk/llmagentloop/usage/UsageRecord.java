@@ -11,7 +11,7 @@ import java.util.UUID;
  * One metered model call.
  *
  * @param executionId  the run that made it; {@code null} for calls outside a run (e.g. background
- *                     or on-demand indexing that no single run triggered)
+ *                     indexing, or semantic search called from your own code outside a run)
  * @param scope        the run's full scope — whose usage this is (tenant, user, session)
  * @param purpose      what the call was for
  * @param provider     which provider served it; {@code null} if unknown

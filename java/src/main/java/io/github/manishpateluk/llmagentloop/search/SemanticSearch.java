@@ -62,6 +62,9 @@ public final class SemanticSearch {
 
     private static final System.Logger LOG = System.getLogger(SemanticSearch.class.getName());
 
+    /** The run the current thread is executing, so embedding calls made through any path are billed to it. */
+    private static final ScopedValue<RunContext> CURRENT_RUN = ScopedValue.newInstance();
+
     private final Embedder embedder;
     private final VectorIndex index;
     private final WorkspaceIndexing workspaceIndexing;
@@ -178,6 +181,20 @@ public final class SemanticSearch {
     }
 
     /**
+     * Runs {@code body} as part of {@code run}: embedding calls it makes on this thread — memory
+     * saves and searches, {@link #indexFile}, {@link #searchWorkspace} and so on — are billed to the
+     * run and counted in its totals, rather than to their scope alone. {@code AgentLoop} wraps every
+     * run in this; a {@code null} run just runs {@code body}.
+     */
+    public static void withinRun(RunContext run, Runnable body) {
+        if (run == null) {
+            body.run();
+        } else {
+            ScopedValue.where(CURRENT_RUN, run).run(body);
+        }
+    }
+
+    /**
      * The listener a run's {@code ScopedWorkspace} reports changes to, indexing per
      * {@link #workspaceIndexing()}. {@code partition} is the workspace's scope at its level.
      */
@@ -247,7 +264,12 @@ public final class SemanticSearch {
     private record Attribution(UUID executionId, Scope scope, Consumer<UsageRecord> runUsage) {
     }
 
+    /** The current run if there is one (see {@link #withinRun}), else {@code scope} with no execution id. */
     private Attribution attribution(Scope scope) {
+        if (CURRENT_RUN.isBound()) {
+            RunContext run = CURRENT_RUN.get();
+            return new Attribution(run.executionId(), run.scope(), run.runUsage());
+        }
         return new Attribution(null, scope, null);
     }
 

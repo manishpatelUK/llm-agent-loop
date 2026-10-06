@@ -522,6 +522,8 @@ public final class AgentLoop {
         private final ScopedMemory scopedMemory;
         private final ScopedWorkspace scopedWorkspace;
         private final KnowledgeSearch knowledge;
+        /** Bills this run's embedding calls (e.g. hybrid memory search) to it; {@code null} without semantic search. */
+        private final SemanticSearch.RunContext searchContext;
         private final RouterConfig routerConfig;
         private final RouterConfig toolsRequiredConfig;
         private final AnswerStream answerStream;
@@ -574,6 +576,7 @@ public final class AgentLoop {
             if (search == null) {
                 this.scopedWorkspace = settings.workspace().scopedTo(workspacePartition, settings.workspaceLimits());
                 this.knowledge = KnowledgeSearch.NONE;
+                this.searchContext = null;
             } else {
                 SemanticSearch.RunContext runContext = new SemanticSearch.RunContext(executionId, scope,
                         record -> runUsage = runUsage.plus(record),
@@ -581,6 +584,7 @@ public final class AgentLoop {
                 this.scopedWorkspace = settings.workspace().scopedTo(workspacePartition, settings.workspaceLimits(),
                         search.workspaceListener(workspacePartition, runContext));
                 this.knowledge = search.knowledge(workspacePartition, settings.workspace(), runContext);
+                this.searchContext = runContext;
             }
             RouterConfig chosen = request.routerConfig() != null ? request.routerConfig() : profile.routerConfig();
             // llm-router's required features turn "drop what the model can't take" into "skip that model".
@@ -628,10 +632,10 @@ public final class AgentLoop {
                     // Cancelled before it started: interrupt ourselves so the first checkpoint stops it.
                     runner.interrupt();
                 }
-                HistoryCompressor.withListener(this, () -> {
+                SemanticSearch.withinRun(searchContext, () -> HistoryCompressor.withListener(this, () -> {
                     executeInScope();
                     return null;
-                });
+                }));
             } finally {
                 done = true;
                 runner = null;

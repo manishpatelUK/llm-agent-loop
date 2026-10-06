@@ -477,7 +477,7 @@ With semantic search on:
 
 **Indexing never breaks the agent's work.** If a file can't be indexed, the write still succeeds and a `WARNING` status message says so. Memory saves are kept even if embedding fails, and memory search falls back to keyword results.
 
-**Defaults.** Embeddings go through the loop's own `llm-router` (`Embedder.router(router)`, OpenAI's `text-embedding-3-small` unless you pass a `RouteEntry`). Vectors go in an `InMemoryVectorIndex`: exact cosine search in the heap, fine for development and modest volumes, but lost on restart. Every embedding call is metered as `UsagePurpose.EMBEDDING`. In-run indexing is billed to the run and counted in `result.usage()`. Background, memory and on-demand indexing are billed to the scope, with no execution id. `llm-router` has no embedding prices yet, so the cost is recorded as 0 and the tokens are still counted.
+**Defaults.** Embeddings go through the loop's own `llm-router` (`Embedder.router(router)`, OpenAI's `text-embedding-3-small` unless you pass a `RouteEntry`). Vectors go in an `InMemoryVectorIndex`: exact cosine search in the heap, fine for development and modest volumes, but lost on restart. Every embedding call is metered as `UsagePurpose.EMBEDDING`. Calls made during a run, including indexing, `knowledge_search` and hybrid memory saves, searches and recall, are billed to the run and counted in `result.usage()`. `ON_WRITE_BACKGROUND` indexing, and calls from your own code outside a run, are billed to the scope with no execution id. `llm-router` has no embedding prices yet, so the cost is recorded as 0 and the tokens are still counted.
 
 **From your own code.** `loop.semanticSearch()` gives you the bound instance:
 

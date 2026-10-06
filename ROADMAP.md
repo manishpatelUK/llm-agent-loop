@@ -47,8 +47,8 @@ far. Remove an item once it ships (and record it in the README's Status section)
   status message now says when it happens, and attachments stay saved and described so tools can
   recover. `LoopRequest.requireAttachmentSupport(true)` skips such models instead, and fails if none
   remain. Dropping only the unsupported attachments belongs in `llm-router`.
-- Memory embedding usage is billed to the memory's scope with no execution id, so it doesn't appear
-  in a run's `result.usage()`. Workspace indexing done during a run does appear there.
+- `ON_WRITE_BACKGROUND` indexing is metered without an execution id and isn't counted in the run's
+  `result.usage()`, since it may finish after the run does.
 - `InMemoryVectorIndex` searches by brute force, which is fine up to tens of thousands of passages.
 - A tool that ignores thread interrupts can't be stopped by its timeout or by cancellation.
 
