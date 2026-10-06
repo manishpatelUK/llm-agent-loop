@@ -7,6 +7,7 @@ import io.github.manishpateluk.llmrouter.capability.ModelEntry;
 import io.github.manishpateluk.llmrouter.provider.Provider;
 import io.github.manishpateluk.llmrouter.provider.ProviderAdapter;
 import io.github.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.model.Response;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -113,6 +114,13 @@ public final class HistoryCompressor {
      */
     private static RequestInterceptor compressingInterceptor(AtomicReference<LlmRouter> self, List<CompressionMethod> methods) {
         return (provider, model, request) -> compress(request, provider, model, methods, self.get()).request();
+    }
+
+    /** Tells the bound {@link CompressionListener}, if any, about a model call compression made. */
+    static void reportModelCall(Response response) {
+        if (LISTENER.isBound()) {
+            LISTENER.get().modelCall(response);
+        }
     }
 
     /** Compresses using {@link #DEFAULT_METHODS} and no LLM fallback available. */

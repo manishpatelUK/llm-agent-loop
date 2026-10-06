@@ -7,6 +7,7 @@ import lombok.Builder;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
 
@@ -38,6 +39,12 @@ import java.util.function.Consumer;
  *                        what order, cost-optimized ordering, thinking level. Overrides the agent
  *                        profile's {@link AgentProfile#routerConfig()}. The loop still adds what its
  *                        own calls need (e.g. requiring tool support where tools are offered).
+ * @param answerSchema    optional JSON schema for a structured version of the final answer — e.g. to
+ *                        render it as cards or feed it to other code. When set, the finished answer is
+ *                        converted to JSON matching the schema in one extra (metered) model call, and
+ *                        the result is {@code AgentLoopResult.structuredAnswer()}; the text answer is
+ *                        still produced (and streamed) as usual. The schema's top level must be an
+ *                        {@code object}.
  * @param onResult        required — called once with the final {@link AgentLoopResult}
  * @param onError         required — called once if the run fails
  * @param onMessage       optional status-update callback; defaults to a no-op
@@ -71,6 +78,7 @@ public record LoopRequest(
         Boolean saveAttachments,
         List<Message> history,
         RouterConfig routerConfig,
+        Map<String, Object> answerSchema,
         Consumer<AgentLoopResult> onResult,
         Consumer<Throwable> onError,
         Consumer<AgentMessage> onMessage,
@@ -94,6 +102,10 @@ public record LoopRequest(
         attachments = attachments == null ? List.of() : List.copyOf(attachments);
         saveAttachments = saveAttachments == null ? Boolean.TRUE : saveAttachments;
         history = history == null ? null : List.copyOf(history);
+        if (answerSchema != null && !"object".equals(answerSchema.get("type"))) {
+            throw new IllegalArgumentException("answerSchema's top level must be {\"type\": \"object\", ...}");
+        }
+        answerSchema = answerSchema == null ? null : Map.copyOf(answerSchema);
         onMessage = onMessage == null ? message -> { } : onMessage;
         onUnregisteredTool = onUnregisteredTool == null ? UnregisteredToolHandler.NONE : onUnregisteredTool;
         if (maxCostUsdCents != null && maxCostUsdCents <= 0) {

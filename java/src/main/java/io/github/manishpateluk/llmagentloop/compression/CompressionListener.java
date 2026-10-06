@@ -1,5 +1,6 @@
 package io.github.manishpateluk.llmagentloop.compression;
 
+import io.github.manishpateluk.llmrouter.model.Response;
 import io.github.manishpateluk.llmrouter.provider.Provider;
 
 /**
@@ -19,5 +20,9 @@ public interface CompressionListener {
 
     /** Every method was tried and the request still doesn't fit {@code model}; the exception is about to be thrown. */
     default void exhausted(Provider provider, String model, CompressionExhaustedException failure) {
+    }
+
+    /** Compression itself made a model call (the {@code LLM_SUMMARIZATION} tier) — e.g. so its tokens can be metered. */
+    default void modelCall(Response response) {
     }
 }

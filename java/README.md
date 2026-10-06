@@ -183,6 +183,7 @@ If you keep chat history yourself, pass `.history(List.of(Message.user(...), Mes
 - **Images and PDFs** are shown to the model directly, for models that can take them.
 - **Small text files** (CSV, Markdown, JSON, ...) are included as text.
 - **Saving.** When a workspace is configured, every attachment is also saved under `uploads/`, and the model is told where. That lets tools work on it: `data_query` on a CSV, `spreadsheet_read` on a workbook, `document_read` on a PDF or Word file. Saved uploads appear in `result.changedFiles()`. Turn saving off per request with `.saveAttachments(false)`.
+- **Models that can't take them.** If the model `llm-router` routes a step to can't take one of the attachments (say, a PDF on a model without file input), the router drops all of them for that call. A `WARNING` status message says so, once per model, so it's never silent. The files stay described in the conversation and saved in the workspace, so tools can still read them.
 - **Names.** Only the base name of the file is kept, with unsafe characters replaced, so a name like `../../etc/passwd` can't escape `uploads/`.
 
 **Cancelling.** `run(...)` returns a `RunHandle`. Call `handle.cancel()` when the user presses stop, or sends a message that supersedes the current one.
@@ -204,8 +205,53 @@ If you keep chat history yourself, pass `.history(List.of(Message.user(...), Mes
 - **How the answer is written.** The model is told to give its final answer as plain text, and each user-facing step streams as it's generated.
 - **Why discards happen.** A step can't be known in advance to be the answer: if it turns out to call tools after all ("Let me look that up..."), `onDiscard()` tells you to drop what you showed, and the next step streams afresh. When the run finishes, the text since the last discard is the final answer, the same as `finalResponse().getContent()`.
 - **What doesn't stream.** Sub-tasks and a plan's intermediate steps don't stream.
-- **Providers.** Anthropic and OpenAI stream token by token, through `llm-router`'s `completeStreaming`. Other providers deliver each step's text in one piece.
+- **Providers.** All of `llm-router`'s built-in providers stream token by token through its `completeStreaming`: Anthropic, OpenAI, Perplexity, NVIDIA, Hugging Face and OpenRouter. A custom adapter without streaming delivers each step's text in one piece.
 - **`report_complete`.** It still works when you don't stream. When you do, it isn't offered for user-facing steps, so the answer always arrives as streamable text.
+
+**Structured answers.** Pass a JSON schema to get the final answer as data too, e.g. to render a card or feed other code:
+
+```java
+.answerSchema(Map.of("type", "object",
+    "properties", Map.of("city", Map.of("type", "string"), "population_millions", Map.of("type", "number")),
+    "required", List.of("city")))
+// result.structuredAnswer() -> {city=Paris, population_millions=2.1}; result.finalResponse() is still the text
+```
+
+- **How it works.** Once the run finishes, one extra model call converts the text answer to JSON matching the schema. The text answer is still produced and streamed as usual.
+- **Limits.** The extra call doesn't count toward `maxSteps`, but it is metered. The schema's top level must be an `object`.
+- **Failures.** If the conversion fails, `structuredAnswer()` is `null` and a `WARNING` says so; the finished run isn't failed. Runs that stop early (limits, cancellation) have no structured answer.
+
+**Usage metering.** Every model call is metered: working steps, planning, answer formatting, history compression's summaries, and conversation compaction. Metering is **on by default**.
+
+```java
+AgentLoopResult result = ...;
+result.usage();                                 // this run: calls, input/output tokens, estimated cost in USD cents
+
+InMemoryUsageMeter meter = (InMemoryUsageMeter) loop.usageMeter();   // the default meter
+meter.totals(scope.atLevel(ScopeLevel.USER));   // running totals for a user (or ScopeLevel.TENANT)
+
+AgentLoop.builder().usageMeter(record -> billing.save(record))   // your own: every UsageRecord, e.g. to a database
+AgentLoop.builder().usageMeter(UsageMeter.NONE)                  // switch metering off
+```
+
+- **The default meter.** `InMemoryUsageMeter` keeps running totals per tenant and per user, in memory and lost on restart, which is fine for dashboards and soft limits. For billing, pass your own `UsageMeter`.
+- **What each record carries:** the run id, the full scope, the purpose (`UsagePurpose`), the provider, the model, input and output tokens, and the estimated cost (from `llm-router`'s capability table, so approximate).
+- **Switching it off.** `UsageMeter.NONE` turns metering off; `result.usage()` is still filled in.
+- **Delegated agents.** Agents an agent delegates to are metered under the same scope, but their usage isn't included in the delegating run's `result.usage()`.
+
+**Long conversations.** When a session's stored history passes 40 messages, everything but the last 10 is replaced by one LLM-written summary. That means one cheap, cost-optimized and metered model call, and the conversation can't grow without bound. Adjust or replace it:
+
+```java
+AgentLoop.builder()
+    .conversationCompaction(ConversationCompaction.summarizing(60, 20))     // different thresholds
+    .conversationCompaction(new ConversationCompaction(40, 10,
+        (older, summarizer, session) -> List.of()))                         // your own: here, just drop older turns
+    .conversationCompaction(ConversationCompaction.OFF)                     // never compact
+```
+
+- **Your own compactor.** It receives the older messages, a `summarizer` (the loop's own metered summarization, if you want it) and the session. Whatever it returns replaces those messages.
+- **The store must support it.** Compaction needs the store's `replace` (see "A custom `ConversationStore`" below). A store without it is left alone, with a warning.
+- **Failures.** A failed compaction is a warning, never a failed turn.
 
 **Choosing models.** Set a default `RouterConfig` per agent with `AgentProfile.builder().routerConfig(...)`, or in an `Agent`'s front matter. Override it per run with `LoopRequest.builder().routerConfig(...)`. That's how you run chat on a cheap model and contract drafting on a strong one, or pin a provider per tenant. The loop keeps your choices and adds only what its own calls need: tool support where tools are offered, and cost-optimized ordering for its internal plan check.
 
@@ -529,6 +575,22 @@ registry.registerAll(EmailTools.all(myEmailService))        // email_send, email
   - Times are exchanged with the model as local date-times in a named timezone, which models handle far more reliably than raw timestamps.
 - **Whose account.** Use `context.scope()` in your implementation to pick the right user's mailbox or calendar.
 
+**CalDAV, ready-made.** `CalDavCalendar` is a `CalendarService` for any CalDAV server (iCloud, Fastmail, Nextcloud, Radicale, Baikal and others):
+
+```java
+CalendarService calendar = CalDavCalendar.builder(
+        scope -> URI.create("https://caldav.example.com/calendars/" + scope.userId() + "/work/"))   // each user's calendar
+    .auth(ApiAuth.basic(scope -> logins.username(scope), scope -> logins.appPassword(scope)))     // or ApiAuth.bearer(...)
+    .organizer(scope -> users.email(scope))     // optional: scheduling-capable servers then email invitations
+    .build();
+registry.registerAll(CalendarTools.all(calendar));
+```
+
+- **Listing** asks the server to expand recurring events into individual instances, so recurrence rules are handled correctly by the server.
+- **Creating** writes a new `.ics` event.
+- **Not supported:** other people's availability (`busyTimes`), so `calendar_find_free_time` covers the user's own calendar.
+- **Failures.** A server that can't be reached, or that rejects the credentials, ends the run.
+
 ### MCP servers
 
 ```java
@@ -826,8 +888,35 @@ Agent agent = Agent.builder(definition).skills(payroll, Skills.spreadsheets()).b
 - **`HumanTools.Handler`.** How `ask_human` reaches your user, and how long it waits.
 - **`AgentDelegate`.** Delegate to anything: a remote agent service, a queue a human team works from.
 - **`EmailService`, `CalendarService`.** Mail and calendar backends for the `email_*` and `calendar_*` tools; see "Email and calendar" above.
-- **`ConversationStore`.** Where chat sessions' turns live: `load(scope)` returns the session's messages, oldest first, and `append(scope, messages)` adds to the end. The scope is the full tenant/user/session, so key storage by `scope.key()`.
+- **`ConversationStore`, `ConversationCompactor`, `UsageMeter`.** See the sections below.
 - **`MemoryStore`, `Workspace`.** Covered above.
+
+### A custom `ConversationStore` (and compaction)
+
+Either implement the interface, or hand the loop three callbacks wrapping your own database code. Keying by `scope.key()` keeps sessions apart:
+
+```java
+ConversationStore store = ConversationStore.of(
+    session -> chatDao.messages(session.key()),                        // load: the session's messages, oldest first
+    (session, messages) -> chatDao.append(session.key(), messages),    // append: add to the end
+    (session, messages) -> chatDao.replaceAll(session.key(), messages) // replace: used by compaction; may be null
+);
+AgentLoop.builder().conversations(store) /* ... */ .build();
+```
+
+- **Each turn** appends the user's message and the final answer.
+- **Compaction** (see "Long conversations") later calls `replace` with the shortened conversation. Pass `null` for `replace` and the session is simply never compacted.
+- **Your own compactor.** To compact with your own logic, for example your own summarization service or archiving old turns elsewhere first, implement `ConversationCompactor` and pass it in a `ConversationCompaction`.
+
+### A custom `UsageMeter`
+
+A `UsageMeter` is one method, `record(UsageRecord)`, called on the run's thread after every model call:
+
+- **Keep it quick.** Write to a queue or batch inserts rather than doing slow I/O inline.
+- **Keep it safe.** It must be safe for concurrent runs.
+- **Catch your own exceptions.** An exception it throws ends the run.
+
+Group records by `record.scope().atLevel(ScopeLevel.TENANT)` or `.atLevel(ScopeLevel.USER)` for per-tenant and per-user billing.
 
 ## Learn more
 

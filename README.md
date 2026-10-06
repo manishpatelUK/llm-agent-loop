@@ -137,12 +137,15 @@ Implemented so far (Java):
     routes to models that can call tools, rather than having them (and the loop's own
     `report_complete`) silently stripped.
 - **Chat-product essentials.**
-  - **Conversation history.** Through a `ConversationStore` keyed by the session's scope, or passed explicitly per request.
+  - **Conversation history.** Through a `ConversationStore` keyed by the session's scope, or passed explicitly per request. The store is your own implementation or three database callbacks (`ConversationStore.of`). Long sessions are compacted: older turns are summarized by default (metered), and a custom `ConversationCompactor` or `OFF` can replace that.
   - **Attachments in any format.** Images and PDFs go to the model directly, small text files inline. All are saved under `uploads/` in the workspace by default, with an opt-out, so tools can work on them.
   - **Cancellation.** `RunHandle.cancel()` interrupts blocking work and finishes the run with `CANCELLED`.
   - **Model choice.** A `RouterConfig` per agent, in front matter or code, or per request.
   - **`ToolInterceptor`.** Before/after hooks on every tool call, for approvals, audit logs, redaction or rate limits.
   - **Per-tool timeouts.** Overrunning tools are interrupted, and the model is told.
+  - **Structured answers.** `LoopRequest.answerSchema` returns the final answer as data matching a JSON schema, as well as text.
+  - **Usage metering.** Every model call is metered (`UsageRecord`: scope, purpose, model, tokens, cost), on by default with an `InMemoryUsageMeter` holding per-tenant and per-user totals. Pass your own `UsageMeter`, or `UsageMeter.NONE` to switch it off. `AgentLoopResult.usage()` has each run's totals.
+  - **Dropped attachments are flagged.** A `WARNING` is sent when the routed model couldn't take the attachments.
   - **Answer streaming.** `LoopRequest.answerStream` receives the final answer as it's written, via `llm-router`'s `completeStreaming`. Final answers are plain text, and a step whose streamed text turns out to precede a tool call is discarded.
 - **Reusable agents: scope, memory, workspace, and tool context** — one `AgentLoop` can serve
   every user of a multi-user product. Each run carries a `Scope` (opaque tenant/user/session ids
@@ -192,7 +195,8 @@ Implemented so far (Java):
     and `presentation_create` (PowerPoint decks with speaker notes);
   - `EmailTools` and `CalendarTools` — `email_send`/`draft`/`search`/`read` and
     `calendar_list_events`/`create_event`/`find_free_time` over implementor-supplied
-    `EmailService`/`CalendarService` interfaces (no provider implementations bundled);
+    `EmailService`/`CalendarService` interfaces, with a ready-made `CalDavCalendar` for any CalDAV
+    server;
   - `McpClient` — any MCP server's tools (stdio or Streamable HTTP), so tools can be written in any
     language.
   `ToolSchemas`/`ToolArguments` help implementors write their own tools the same way.

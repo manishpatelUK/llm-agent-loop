@@ -26,6 +26,11 @@ public final class InMemoryConversationStore implements ConversationStore {
         conversations.computeIfAbsent(session, key -> new CopyOnWriteArrayList<>()).addAll(messages);
     }
 
+    @Override
+    public void replace(Scope session, List<Message> messages) {
+        conversations.put(session, new CopyOnWriteArrayList<>(messages));
+    }
+
     /** Forgets a session's conversation, e.g. when the user starts over. */
     public void clear(Scope session) {
         conversations.remove(session);

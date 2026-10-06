@@ -54,6 +54,7 @@ final class LlmSummarizationStrategy implements CompressionStrategy {
                 + "Transcript:\n" + transcript;
 
         Response response = router.complete(prompt);
+        HistoryCompressor.reportModelCall(response);
         return response.getContent();
     }
 

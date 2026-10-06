@@ -11,6 +11,7 @@ import io.github.manishpateluk.llmrouter.model.Request;
 import io.github.manishpateluk.llmrouter.model.Response;
 import io.github.manishpateluk.llmrouter.model.ToolCall;
 import io.github.manishpateluk.llmrouter.model.ToolDefinition;
+import io.github.manishpateluk.llmrouter.model.Usage;
 import io.github.manishpateluk.llmrouter.provider.Provider;
 import io.github.manishpateluk.llmrouter.provider.ProviderAdapter;
 import io.github.manishpateluk.llmagentloop.compression.CompressionAttempt;
@@ -19,7 +20,14 @@ import io.github.manishpateluk.llmagentloop.compression.CompressionListener;
 import io.github.manishpateluk.llmagentloop.compression.CompressionMethod;
 import io.github.manishpateluk.llmagentloop.compression.CompressionOutcome;
 import io.github.manishpateluk.llmagentloop.compression.HistoryCompressor;
+import io.github.manishpateluk.llmagentloop.conversation.ConversationCompaction;
+import io.github.manishpateluk.llmagentloop.conversation.ConversationCompactor;
 import io.github.manishpateluk.llmagentloop.conversation.ConversationStore;
+import io.github.manishpateluk.llmagentloop.usage.InMemoryUsageMeter;
+import io.github.manishpateluk.llmagentloop.usage.UsageMeter;
+import io.github.manishpateluk.llmagentloop.usage.UsagePurpose;
+import io.github.manishpateluk.llmagentloop.usage.UsageRecord;
+import io.github.manishpateluk.llmagentloop.usage.UsageTotals;
 import io.github.manishpateluk.llmagentloop.execution.Execution;
 import io.github.manishpateluk.llmagentloop.execution.StepAction;
 import io.github.manishpateluk.llmagentloop.execution.StepRecord;
@@ -127,10 +135,14 @@ public final class AgentLoop {
     private record Settings(
             MemoryStore memory, ScopeLevel memoryLevel, Workspace workspace, ScopeLevel workspaceLevel,
             WorkspaceLimits workspaceLimits, ConversationStore conversations, List<ToolInterceptor> interceptors,
-            Duration toolTimeout) {
+            Duration toolTimeout, UsageMeter usageMeter, ConversationCompaction compaction) {
 
-        static final Settings DEFAULT = new Settings(MemoryStore.NONE, ScopeLevel.USER, Workspace.NONE, ScopeLevel.USER,
-                WorkspaceLimits.DEFAULT, ConversationStore.NONE, List.of(), DEFAULT_TOOL_TIMEOUT);
+        /** Defaults, with a fresh {@link InMemoryUsageMeter} — so metering is on unless switched off. */
+        static Settings defaults() {
+            return new Settings(MemoryStore.NONE, ScopeLevel.USER, Workspace.NONE, ScopeLevel.USER,
+                    WorkspaceLimits.DEFAULT, ConversationStore.NONE, List.of(), DEFAULT_TOOL_TIMEOUT,
+                    new InMemoryUsageMeter(), ConversationCompaction.DEFAULT);
+        }
 
         Settings {
             Objects.requireNonNull(memory, "memory");
@@ -141,6 +153,8 @@ public final class AgentLoop {
             Objects.requireNonNull(conversations, "conversations");
             interceptors = List.copyOf(interceptors);
             Objects.requireNonNull(toolTimeout, "toolTimeout");
+            Objects.requireNonNull(usageMeter, "usageMeter");
+            Objects.requireNonNull(compaction, "compaction");
         }
     }
 
@@ -157,9 +171,12 @@ public final class AgentLoop {
     }
 
     public AgentLoop(LlmRouter router, ToolRegistry tools, MemoryStore memory) {
-        this(router, tools, new Settings(memory, Settings.DEFAULT.memoryLevel(), Settings.DEFAULT.workspace(),
-                Settings.DEFAULT.workspaceLevel(), Settings.DEFAULT.workspaceLimits(), Settings.DEFAULT.conversations(),
-                Settings.DEFAULT.interceptors(), Settings.DEFAULT.toolTimeout()));
+        this(router, tools, withMemory(Settings.defaults(), memory));
+    }
+
+    private static Settings withMemory(Settings d, MemoryStore memory) {
+        return new Settings(memory, d.memoryLevel(), d.workspace(), d.workspaceLevel(), d.workspaceLimits(),
+                d.conversations(), d.interceptors(), d.toolTimeout(), d.usageMeter(), d.compaction());
     }
 
     private AgentLoop(LlmRouter router, ToolRegistry tools, Settings settings) {
@@ -182,6 +199,14 @@ public final class AgentLoop {
         return tools;
     }
 
+    /**
+     * Where this loop's usage goes — by default an {@link InMemoryUsageMeter}, which can be cast to
+     * read totals per tenant or user.
+     */
+    public UsageMeter usageMeter() {
+        return settings.usageMeter();
+    }
+
     /** See {@link Builder}. */
     public static Builder builder() {
         return new Builder();
@@ -200,19 +225,23 @@ public final class AgentLoop {
      */
     public static final class Builder {
 
+        private static final Settings DEFAULTS = Settings.defaults();
+
         private List<ProviderAdapter> adapters;
         private LlmRouter router;
         private boolean compress = true;
         private List<CompressionMethod> compressionMethods;
         private ToolRegistry tools = new ToolRegistry();
-        private MemoryStore memory = Settings.DEFAULT.memory();
-        private ScopeLevel memoryLevel = Settings.DEFAULT.memoryLevel();
-        private Workspace workspace = Settings.DEFAULT.workspace();
-        private ScopeLevel workspaceLevel = Settings.DEFAULT.workspaceLevel();
-        private WorkspaceLimits workspaceLimits = Settings.DEFAULT.workspaceLimits();
-        private ConversationStore conversations = Settings.DEFAULT.conversations();
+        private MemoryStore memory = DEFAULTS.memory();
+        private ScopeLevel memoryLevel = DEFAULTS.memoryLevel();
+        private Workspace workspace = DEFAULTS.workspace();
+        private ScopeLevel workspaceLevel = DEFAULTS.workspaceLevel();
+        private WorkspaceLimits workspaceLimits = DEFAULTS.workspaceLimits();
+        private ConversationStore conversations = DEFAULTS.conversations();
         private final List<ToolInterceptor> interceptors = new ArrayList<>();
-        private Duration toolTimeout = Settings.DEFAULT.toolTimeout();
+        private Duration toolTimeout = DEFAULTS.toolTimeout();
+        private UsageMeter usageMeter;
+        private ConversationCompaction compaction = ConversationCompaction.DEFAULT;
 
         private Builder() {
         }
@@ -289,6 +318,24 @@ public final class AgentLoop {
             return this;
         }
 
+        /**
+         * Where every model call's usage goes. Defaults to a new {@link InMemoryUsageMeter} (metering on);
+         * pass your own to persist it, or {@link UsageMeter#NONE} to switch metering off.
+         */
+        public Builder usageMeter(UsageMeter usageMeter) {
+            this.usageMeter = Objects.requireNonNull(usageMeter, "usageMeter");
+            return this;
+        }
+
+        /**
+         * How long chat sessions are compacted in the conversation store; defaults to
+         * {@link ConversationCompaction#DEFAULT} (summarize older turns). {@link ConversationCompaction#OFF} disables it.
+         */
+        public Builder conversationCompaction(ConversationCompaction compaction) {
+            this.compaction = Objects.requireNonNull(compaction, "compaction");
+            return this;
+        }
+
         /** History compression is on by default; pass {@code false} to disable it. */
         public Builder compress(boolean compress) {
             this.compress = compress;
@@ -316,7 +363,8 @@ public final class AgentLoop {
 
             LlmRouter effectiveRouter = router != null ? router : buildRouter();
             return new AgentLoop(effectiveRouter, tools, new Settings(memory, memoryLevel, workspace, workspaceLevel,
-                    workspaceLimits, conversations, interceptors, toolTimeout));
+                    workspaceLimits, conversations, interceptors, toolTimeout,
+                    usageMeter != null ? usageMeter : new InMemoryUsageMeter(), compaction));
         }
 
         private LlmRouter buildRouter() {
@@ -440,6 +488,10 @@ public final class AgentLoop {
         private int currentThread = 0;
         private int stepCount = 0;
         private int accumulatedCostUsdCents = 0;
+        /** Every model call this run made, summed. */
+        private UsageTotals runUsage = UsageTotals.ZERO;
+        /** provider/model pairs already warned about dropping attachments, so each warns once. */
+        private final java.util.Set<String> attachmentDropWarnings = new java.util.HashSet<>();
         private Response lastResponse;
 
         private volatile boolean cancelRequested;
@@ -622,7 +674,7 @@ public final class AgentLoop {
             Request req = request(request.prompt(), profile.toSystemInstructionsFragment(), List.of())
                     .config(routerConfig)
                     .build();
-            Response response = call(0, req, true);
+            Response response = call(0, req, true, UsagePurpose.STEP);
             recordStep(0, StepAction.COMPLETE, request.prompt(), null, null, response.getContent(), response);
             complete(response, TerminationReason.COMPLETED);
         }
@@ -635,7 +687,7 @@ public final class AgentLoop {
                     .responseSchema(AgentLoopSchemas.PLAN_NEEDED_SCHEMA)
                     .config(RouterConfigs.costOptimized(routerConfig))
                     .build();
-            Response response = call(0, req);
+            Response response = call(0, req, false, UsagePurpose.PLAN_CHECK);
 
             Map<String, Object> out = response.getStructuredOutput();
             boolean needsPlan = out != null && Boolean.TRUE.equals(out.get("needsPlan"));
@@ -654,7 +706,7 @@ public final class AgentLoop {
                     .responseSchema(AgentLoopSchemas.PLAN_SCHEMA)
                     .config(routerConfig)
                     .build();
-            Response response = call(0, req);
+            Response response = call(0, req, false, UsagePurpose.PLAN);
 
             Map<String, Object> out = response.getStructuredOutput();
             if (out == null) {
@@ -723,7 +775,7 @@ public final class AgentLoop {
                         .tools(List.copyOf(availableTools))
                         .config(toolsRequiredConfig)
                         .build();
-                Response response = call(thread, req, streaming);
+                Response response = call(thread, req, streaming, UsagePurpose.STEP);
                 if (streamedThisCall && !response.getToolCalls().isEmpty()) {
                     answerStream.onDiscard(); // that text was a preamble to tool calls, not the answer
                 }
@@ -954,13 +1006,12 @@ public final class AgentLoop {
 
         // ---- model calls and limits -----------------------------------------------------------
 
-        /** Every LLM call the run makes goes through here, so each one counts toward {@code maxSteps} and the budgets. */
-        private Response call(int thread, Request req) {
-            return call(thread, req, false);
-        }
-
-        /** {@code stream}: deliver this call's text to the {@link AnswerStream} as it's generated. */
-        private Response call(int thread, Request req, boolean stream) {
+        /**
+         * Every working LLM call the run makes goes through here, so each one counts toward
+         * {@code maxSteps} and the budgets, and is metered. {@code stream}: deliver this call's text
+         * to the {@link AnswerStream} as it's generated.
+         */
+        private Response call(int thread, Request req, boolean stream, UsagePurpose purpose) {
             checkCancelled();
             checkStepBudget();
             currentThread = thread;
@@ -983,10 +1034,38 @@ public final class AgentLoop {
             } else {
                 response = router.complete(req);
             }
+            meter(purpose, response);
+            warnIfAttachmentsDropped(thread, response);
             checkCancelled();
             lastResponse = response;
             checkBudgets(thread, response);
             return response;
+        }
+
+        /** Records one model call's usage on the run's totals and with the loop's {@link UsageMeter}. */
+        private void meter(UsagePurpose purpose, Response response) {
+            Usage usage = response.getUsage();
+            UsageRecord record = new UsageRecord(executionId, scope, purpose, response.getProviderUsed(), response.getModelUsed(),
+                    usage == null ? 0 : usage.getInputTokens(), usage == null ? 0 : usage.getOutputTokens(),
+                    usage == null ? 0 : usage.getEstimatedCostUsdCents(), Instant.now());
+            runUsage = runUsage.plus(record);
+            settings.usageMeter().record(record);
+        }
+
+        /**
+         * llm-router drops all of a request's attachments when the model it routed to can't take one
+         * of them; say so (once per model) rather than letting the model silently not see the files.
+         */
+        private void warnIfAttachmentsDropped(int thread, Response response) {
+            if (response.getDroppedFeatures() == null || !response.getDroppedFeatures().contains("attachments")) {
+                return;
+            }
+            String model = response.getProviderUsed() + "/" + response.getModelUsed();
+            if (attachmentDropWarnings.add(model)) {
+                emit(thread, MessageType.WARNING, "The model that handled this step (" + model + ") can't take one or more "
+                        + "of the attached files, so none of the attachments were sent to it. They're still described in "
+                        + "the conversation" + (attachmentPaths.isEmpty() ? "" : " and saved in the workspace") + ".");
+            }
         }
 
         /**
@@ -1032,6 +1111,11 @@ public final class AgentLoop {
                     + " tokens (target " + outcome.targetTokens() + ") via " + methods;
             emit(currentThread, MessageType.INFO, description);
             recordStep(currentThread, StepAction.HISTORY_COMPRESSION, description, null, null, null, null);
+        }
+
+        @Override
+        public void modelCall(Response response) {
+            meter(UsagePurpose.HISTORY_COMPRESSION, response);
         }
 
         @Override
@@ -1095,9 +1179,42 @@ public final class AgentLoop {
         }
 
         private void complete(Response finalResponse, TerminationReason reason) {
+            Map<String, Object> structured = reason == TerminationReason.COMPLETED && request.answerSchema() != null
+                    ? structuredAnswer(finalResponse.getContent())
+                    : null;
             saveConversationTurn(finalResponse.getContent());
             Execution execution = new Execution(executionId, List.copyOf(steps), reason);
-            request.onResult().accept(new AgentLoopResult(finalResponse, execution, List.copyOf(scopedWorkspace.changedPaths())));
+            request.onResult().accept(new AgentLoopResult(finalResponse, execution, List.copyOf(scopedWorkspace.changedPaths()),
+                    runUsage, structured));
+        }
+
+        /**
+         * One extra call converting the finished answer into data matching {@link LoopRequest#answerSchema()}.
+         * Post-processing, so it doesn't count toward {@code maxSteps}; its usage is metered. A failure
+         * leaves the structured answer {@code null} with a warning rather than failing a finished run.
+         */
+        private Map<String, Object> structuredAnswer(String answer) {
+            try {
+                checkCancelled();
+                Request req = Request.builder()
+                        .prompt("Express the answer below as JSON matching the response schema. Use only information "
+                                + "in the answer; use null for anything it doesn't say.\n\nAnswer:\n" + (answer == null ? "" : answer))
+                        .responseSchema(request.answerSchema())
+                        .config(routerConfig)
+                        .build();
+                Response response = router.complete(req);
+                meter(UsagePurpose.ANSWER_FORMATTING, response);
+                if (response.getStructuredOutput() == null) {
+                    emit(0, MessageType.WARNING, "Couldn't turn the answer into the requested structure; structuredAnswer is null.");
+                }
+                return response.getStructuredOutput();
+            } catch (Cancelled e) {
+                return null;
+            } catch (RuntimeException e) {
+                emit(0, MessageType.WARNING, "Couldn't turn the answer into the requested structure (" + e.getMessage()
+                        + "); structuredAnswer is null.");
+                return null;
+            }
         }
 
         /** Appends this turn — the user's message (noting any saved attachments) and the answer — to the session's conversation. */
@@ -1110,6 +1227,59 @@ public final class AgentLoop {
                     : request.prompt() + "\n\n[Attached: " + String.join(", ", attachmentPaths) + "]";
             settings.conversations().append(request.scope(),
                     List.of(Message.user(userMessage), Message.assistant(answer == null ? "" : answer)));
+            compactConversation();
+        }
+
+        /**
+         * After a turn is saved: if the session has grown past the compaction threshold, everything but
+         * the most recent messages goes to the {@code ConversationCompactor} (by default, an LLM summary)
+         * and the store's conversation is replaced. Problems become warnings — never a failed turn.
+         */
+        private void compactConversation() {
+            ConversationCompaction policy = settings.compaction();
+            if (policy.compactor() == ConversationCompactor.NONE) {
+                return;
+            }
+            try {
+                List<Message> all = settings.conversations().load(request.scope());
+                if (all.size() <= policy.maxMessages()) {
+                    return;
+                }
+                int split = all.size() - policy.keepRecent();
+                List<Message> older = List.copyOf(all.subList(0, split));
+                List<Message> replacement = policy.compactor().compact(older, this::summarizeConversation, request.scope());
+                if (replacement == null || replacement.equals(older)) {
+                    return;
+                }
+                List<Message> compacted = new ArrayList<>(replacement);
+                compacted.addAll(all.subList(split, all.size()));
+                settings.conversations().replace(request.scope(), List.copyOf(compacted));
+                emit(0, MessageType.INFO, "Compacted the conversation: " + older.size() + " older message(s) became "
+                        + replacement.size() + ".");
+            } catch (UnsupportedOperationException e) {
+                emit(0, MessageType.WARNING, "The conversation store doesn't support replace(), so long conversations can't be compacted.");
+            } catch (Cancelled e) {
+                // cancelled while compacting: leave the conversation as it was
+            } catch (RuntimeException e) {
+                emit(0, MessageType.WARNING, "Couldn't compact the conversation (" + e.getMessage() + "); it was left as it was.");
+            }
+        }
+
+        /** The default compactor's summarizer: a cheap, metered model call. */
+        private String summarizeConversation(List<Message> messages) {
+            StringBuilder transcript = new StringBuilder();
+            for (Message message : messages) {
+                transcript.append(message.getRole()).append(": ").append(message.getContent()).append("\n\n");
+            }
+            Request req = Request.builder()
+                    .prompt("Summarize this conversation between a user and an assistant into a concise briefing for the "
+                            + "assistant to continue from. Preserve every fact, decision, preference, commitment, file name and "
+                            + "open question; drop pleasantries.\n\nConversation:\n" + transcript)
+                    .config(RouterConfigs.costOptimized(routerConfig))
+                    .build();
+            Response response = router.complete(req);
+            meter(UsagePurpose.CONVERSATION_COMPACTION, response);
+            return response.getContent() == null ? "" : response.getContent();
         }
 
         /** The best-effort "result as is" when a run stops early: the last response's own content, if any. */
