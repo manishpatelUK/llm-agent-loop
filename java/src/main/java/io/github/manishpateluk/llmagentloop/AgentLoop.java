@@ -522,6 +522,8 @@ public final class AgentLoop {
         private final ScopedMemory scopedMemory;
         private final ScopedWorkspace scopedWorkspace;
         private final KnowledgeSearch knowledge;
+        /** What tools keep for the rest of the run ({@code ToolContext.runState}). */
+        private final java.util.Map<String, Object> toolState = new java.util.concurrent.ConcurrentHashMap<>();
         /** Bills this run's embedding calls (e.g. hybrid memory search) to it; {@code null} without semantic search. */
         private final SemanticSearch.RunContext searchContext;
         private final RouterConfig routerConfig;
@@ -1121,6 +1123,11 @@ public final class AgentLoop {
                 @Override
                 public KnowledgeSearch knowledge() {
                     return knowledge;
+                }
+
+                @Override
+                public java.util.Map<String, Object> state() {
+                    return toolState;
                 }
             });
         }

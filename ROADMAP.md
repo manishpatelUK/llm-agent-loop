@@ -39,6 +39,15 @@ far. Remove an item once it ships (and record it in the README's Status section)
 
 ## Known limitations
 
+- On-demand skills: `load_skill` remembers per run which skills were loaded, and loading one again
+  returns a short reminder. If history compression has since dropped the original `load_skill`
+  result, the model no longer has those instructions. Fix: when compression removes a loaded
+  skill's result, mark that skill as not loaded again.
+- `delegate_to_agent` lists every delegate in its tool description, one line each (capped at 160
+  characters). That's about 2–3k characters with 40 delegates. Provider limits on tool-description
+  length haven't been checked; if one applies, the list may need to move to the system prompt or
+  the `agent` parameter's description.
+
 - `document_create`'s PDFs use the standard PDF fonts, so most non-Latin scripts and emoji render as
   `?` (Word output is unaffected).
 

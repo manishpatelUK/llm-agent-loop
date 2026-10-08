@@ -7,15 +7,19 @@ import io.github.manishpateluk.llmrouter.provider.Provider;
 import io.github.manishpateluk.llmagentloop.AgentProfile;
 import io.github.manishpateluk.llmagentloop.PlanMode;
 import io.github.manishpateluk.llmagentloop.skill.Skill;
+import io.github.manishpateluk.llmagentloop.skill.SkillLoader;
 import io.github.manishpateluk.llmagentloop.tool.RegisteredTool;
 import io.github.manishpateluk.llmagentloop.tool.builtin.AgentDelegate;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -42,10 +46,25 @@ import java.util.regex.Pattern;
  * since other agents delegate to it by name. {@code models}, {@code thinking_level} and
  * {@code cost_optimized} set the agent's default {@link RouterConfig} (also settable with
  * {@link Builder#routerConfig}); a run can still override it with {@code LoopRequest.routerConfig}.
+ *
+ * <p>Any other front matter keys are your application's own data: they're kept, in order, in
+ * {@link #metadata()} and otherwise ignored (e.g. {@code skills: evidence_discipline} for your code to
+ * resolve into {@link Builder#onDemandSkill}s). Known keys are still validated, so a bad
+ * {@code plan_mode} value fails; {@link Builder#strictFrontMatter()} also rejects unknown keys, to
+ * catch misspelled key names.
+ *
+ * <p>Skills are given two ways. {@link Builder#skill} inlines a skill's instructions in the system
+ * prompt on every call. {@link Builder#onDemandSkill} lists only its name and description there, and
+ * the model loads the full instructions with {@code load_skill} when it needs them: the way to give
+ * an agent dozens of skills or reference documents without paying for them on every call.
  */
 public final class Agent {
 
     private static final Pattern NAME = Pattern.compile("^[a-zA-Z0-9_-]{1,64}$");
+
+    /** Front matter keys this library reads; anything else goes to {@link #metadata()}. */
+    static final List<String> KNOWN_KEYS =
+            List.of("name", "description", "plan_mode", "max_steps", "models", "thinking_level", "cost_optimized");
 
     private final String name;
     private final String description;
@@ -54,6 +73,8 @@ public final class Agent {
     private final int maxSteps;
     private final RouterConfig routerConfig;
     private final List<Skill> skills;
+    private final List<Skill> onDemandSkills;
+    private final Map<String, String> metadata;
     private final List<RegisteredTool> tools;
     private final List<Agent> delegateAgents;
     private final List<AgentDelegate> delegates;
@@ -66,6 +87,8 @@ public final class Agent {
         this.maxSteps = b.maxSteps;
         this.routerConfig = b.routerConfig();
         this.skills = List.copyOf(b.skills);
+        this.onDemandSkills = List.copyOf(b.onDemandSkills);
+        this.metadata = Collections.unmodifiableMap(new LinkedHashMap<>(b.metadata));
         this.tools = List.copyOf(b.tools);
         this.delegateAgents = List.copyOf(b.delegateAgents);
         this.delegates = List.copyOf(b.delegates);
@@ -94,8 +117,22 @@ public final class Agent {
         return instructions;
     }
 
+    /** Skills whose instructions are inlined in every call's system prompt. */
     public List<Skill> skills() {
         return skills;
+    }
+
+    /** Skills listed in the system prompt by name and description only, loaded by the model with {@code load_skill}. */
+    public List<Skill> onDemandSkills() {
+        return onDemandSkills;
+    }
+
+    /**
+     * Front matter keys this library doesn't use, in the order written: your application's own
+     * data. Keys are lower-cased; values are as written (unquoted). Unmodifiable; empty if none.
+     */
+    public Map<String, String> metadata() {
+        return metadata;
     }
 
     /** How this agent's model calls are routed by default; {@code null} for the router's defaults. */
@@ -117,7 +154,10 @@ public final class Agent {
         return delegates;
     }
 
-    /** The {@link AgentProfile} each run uses: the definition's instructions followed by each skill's guidance. */
+    /**
+     * The {@link AgentProfile} each run uses: the definition's instructions, then each inlined
+     * skill's guidance, then the catalogue of on-demand skills.
+     */
     public AgentProfile profile() {
         StringBuilder text = new StringBuilder(instructions.strip());
         if (!skills.isEmpty()) {
@@ -127,6 +167,9 @@ public final class Agent {
                     text.append('\n').append(skill.instructionsSection()).append('\n');
                 }
             }
+        }
+        if (!onDemandSkills.isEmpty()) {
+            text.append("\n\n").append(SkillLoader.catalogue(onDemandSkills));
         }
         return AgentProfile.builder()
                 .planMode(planMode)
@@ -153,6 +196,9 @@ public final class Agent {
         private ThinkingLevel thinkingLevel;
         private Boolean costOptimized;
         private final List<Skill> skills = new ArrayList<>();
+        private final List<Skill> onDemandSkills = new ArrayList<>();
+        private final Map<String, String> metadata = new LinkedHashMap<>();
+        private boolean strictFrontMatter;
         private final List<RegisteredTool> tools = new ArrayList<>();
         private final List<Agent> delegateAgents = new ArrayList<>();
         private final List<AgentDelegate> delegates = new ArrayList<>();
@@ -177,10 +223,19 @@ public final class Agent {
                     case "models" -> models = parseModels(entry.getValue());
                     case "thinking_level" -> thinkingLevel = parseThinkingLevel(entry.getValue());
                     case "cost_optimized" -> costOptimized = parseBoolean("cost_optimized", entry.getValue());
-                    default -> throw new IllegalArgumentException("Unknown front matter key '" + entry.getKey()
-                            + "'; supported: name, description, plan_mode, max_steps, models, thinking_level, cost_optimized");
+                    default -> metadata.put(entry.getKey(), entry.getValue());
                 }
             }
+        }
+
+        /**
+         * Rejects front matter keys this library doesn't know, instead of keeping them in
+         * {@link Agent#metadata()}: for definitions that should carry no application data, so a
+         * misspelled key (e.g. {@code plan-mode}) fails rather than being silently kept.
+         */
+        public Builder strictFrontMatter() {
+            this.strictFrontMatter = true;
+            return this;
         }
 
         public Builder name(String name) {
@@ -241,6 +296,30 @@ public final class Agent {
             return this;
         }
 
+        /**
+         * Gives this agent {@code skill} on demand: the system prompt lists only its name and
+         * description, and the model calls {@code load_skill} to read its instructions when it needs
+         * them (each skill at most once per run). Any tools the skill brings are registered from the
+         * start, like an inlined skill's: tools are small, it's the instructions that are kept out of
+         * the prompt. Skill names must be unique across an agent's inlined and on-demand skills.
+         */
+        public Builder onDemandSkill(Skill skill) {
+            onDemandSkills.add(Objects.requireNonNull(skill, "skill"));
+            return this;
+        }
+
+        public Builder onDemandSkills(Skill... skills) {
+            for (Skill skill : skills) {
+                onDemandSkill(skill);
+            }
+            return this;
+        }
+
+        public Builder onDemandSkills(List<Skill> skills) {
+            skills.forEach(this::onDemandSkill);
+            return this;
+        }
+
         public Builder tool(RegisteredTool tool) {
             tools.add(Objects.requireNonNull(tool, "tool"));
             return this;
@@ -270,6 +349,20 @@ public final class Agent {
             }
             if (instructions.isBlank()) {
                 throw new IllegalArgumentException("Agent '" + name + "' has no instructions: the Markdown body is empty");
+            }
+            if (strictFrontMatter && !metadata.isEmpty()) {
+                throw new IllegalArgumentException("Unknown front matter key '" + metadata.keySet().iterator().next()
+                        + "'; supported: " + String.join(", ", KNOWN_KEYS));
+            }
+            Set<String> skillNames = new HashSet<>();
+            for (Skill skill : skills) {
+                skillNames.add(skill.name().toLowerCase(Locale.ROOT));
+            }
+            for (Skill skill : onDemandSkills) {
+                if (!skillNames.add(skill.name().toLowerCase(Locale.ROOT))) {
+                    throw new IllegalArgumentException("Agent '" + name + "' has more than one skill called '" + skill.name()
+                            + "'; on-demand skills are loaded by name, so names must be unique");
+                }
             }
             return new Agent(this);
         }

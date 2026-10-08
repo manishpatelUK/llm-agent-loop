@@ -34,7 +34,24 @@ public final class DelegationTools {
     /** How deep in a delegation chain the current thread is; delegated runs execute on the delegating thread. */
     private static final ScopedValue<Integer> DEPTH = ScopedValue.newInstance();
 
+    /** Longest delegate description shown in the tool's roster; longer ones are cut at a word. */
+    public static final int MAX_SUMMARY_CHARS = 160;
+
     private DelegationTools() {
+    }
+
+    /** A delegate's description as one roster line: its first line, cut to {@link #MAX_SUMMARY_CHARS}. */
+    static String summary(String description) {
+        String text = description == null ? "" : description.strip();
+        int newline = text.indexOf('\n');
+        if (newline >= 0) {
+            text = text.substring(0, newline).strip();
+        }
+        if (text.length() <= MAX_SUMMARY_CHARS) {
+            return text;
+        }
+        int cut = text.lastIndexOf(' ', MAX_SUMMARY_CHARS - 1);
+        return text.substring(0, cut > MAX_SUMMARY_CHARS / 2 ? cut : MAX_SUMMARY_CHARS - 1).strip() + "\u2026";
     }
 
     public static RegisteredTool delegateToAgent(List<AgentDelegate> delegates) {
@@ -51,15 +68,15 @@ public final class DelegationTools {
             }
         }
 
+        // One compact line per delegate: with dozens of them, this list is most of the tool's size.
         StringBuilder roster = new StringBuilder();
-        byName.values().forEach(d -> roster.append("\n- ").append(d.name()).append(": ").append(d.description()));
+        byName.values().forEach(d -> roster.append("\n- ").append(d.name()).append(": ").append(summary(d.description())));
 
         return new RegisteredTool(
                 ToolDefinition.builder()
                         .name(DELEGATE)
                         .description("Hand a self-contained task to a specialist agent and get its result back. "
-                                + "Give it everything it needs in the task — it doesn't see this conversation. "
-                                + "Available agents:" + roster)
+                                + "Give it everything it needs in the task: it doesn't see this conversation. Agents:" + roster)
                         .parameters(ToolSchemas.object(List.of("agent", "task"),
                                 "agent", ToolSchemas.stringEnum("Which agent to delegate to.", List.copyOf(byName.keySet())),
                                 "task", ToolSchemas.string("The complete task, including any context and what to return.")))
@@ -68,7 +85,8 @@ public final class DelegationTools {
                     String name = ToolArguments.requireString(args, "agent");
                     AgentDelegate delegate = byName.get(name);
                     if (delegate == null) {
-                        throw new ToolInputException("No agent called '" + name + "'; available: " + byName.keySet());
+                        throw new ToolInputException("No agent called '" + name + "'; available: "
+                                + String.join(", ", byName.keySet()));
                     }
                     int depth = DEPTH.orElse(0) + 1;
                     if (depth > MAX_DEPTH) {

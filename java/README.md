@@ -102,9 +102,27 @@ AgentLoopResult result = runtime.runAndWait(assistant, userMessage, scope);
 ```
 
 - **Front matter can choose models.** `models: anthropic/claude-sonnet-5-5, openai` gives a preference order; a provider on its own lets the router pick its model. `thinking_level` and `cost_optimized` can also be set, or use `Agent.builder(md).routerConfig(...)`.
-- **The Markdown body becomes the agent's instructions, verbatim.** Front matter is optional apart from `name`, which must match `^[a-zA-Z0-9_-]{1,64}$` because other agents delegate by name. It can also be set with `Agent.builder(md).name(...)`. Unknown front matter keys are rejected, so a typo doesn't go unnoticed.
-- **Skills** bundle tools with guidance, which is added to the agent's instructions. The ready-made ones in `Skills` are `memory()`, `files()`, `spreadsheets()`, `dataAnalysis()`, `web(...)` and `askingTheUser(...)`. You can make your own with `new Skill(name, description, instructions, tools)`.
+- **The Markdown body becomes the agent's instructions, verbatim.** Front matter is optional apart from `name`, which must match `^[a-zA-Z0-9_-]{1,64}$` because other agents delegate by name. It can also be set with `Agent.builder(md).name(...)`.
+- **Your own front matter keys are kept.** Keys the library doesn't use (`skills:`, `silos:`, anything) end up in `agent.metadata()`, an ordered, unmodifiable `Map<String, String>` with lower-cased keys. The library otherwise ignores them. Known keys are still validated, so `plan_mode: sometimes` fails. To catch misspelled key names in definitions that carry no data of yours, call `Agent.builder(md).strictFrontMatter()`, which rejects unknown keys.
+- **Skills** bundle tools with guidance. The ready-made ones in `Skills` are `memory()`, `files()`, `spreadsheets()`, `dataAnalysis()`, `knowledge()`, `web(...)`, `email(...)`, `calendar(...)` and `askingTheUser(...)`. You can make your own with `new Skill(name, description, instructions, tools)`. An instruction-only skill (no tools) is also how to give an agent reference knowledge.
+- **Inlined or on demand.** `.skill(...)` inlines a skill's instructions in the system prompt on every call. `.onDemandSkill(...)` / `.onDemandSkills(...)` lists only each skill's name and the first line of its description, and adds a `load_skill` tool the model calls to read a skill's full instructions when it needs them. Use on-demand skills when an agent has many skills or long reference documents. You can mix both on one agent.
+  - Each skill is loaded at most once per run: loading it again returns a short reminder that it's already in the conversation.
+  - Names match case-insensitively, and an unknown name is a fixable error listing the valid names.
+  - Tools that an on-demand skill brings are registered from the start, like an inlined skill's. Only the instructions wait.
+  - Skill names must be unique across an agent's inlined and on-demand skills.
+  - Skill text is your trusted content, so it isn't labelled as untrusted.
+  - Limitation: if history compression later drops the `load_skill` result from a long run, loading the skill again still returns only the reminder, so the model no longer has those instructions. See ROADMAP.md.
+  - Without `Agent`, register `SkillLoader.loadSkill(skills)` yourself and append `SkillLoader.catalogue(skills)` to your profile's instructions.
+
+  ```java
+  // e.g. resolving an agent's own front matter into skills from your library of them
+  Agent agent = Agent.builder(markdown).build();
+  List<Skill> wanted = Arrays.stream(agent.metadata().getOrDefault("skills", "").split(","))
+      .map(String::strip).filter(name -> !name.isEmpty()).map(skillLibrary::get).toList();
+  agent = Agent.builder(markdown).onDemandSkills(wanted).build();
+  ```
 - **Tools.** Each agent gets the runtime's base tools (those on the `AgentLoop` you pass in), plus its skills' tools, plus its own. Each agent's loop is built once and reused.
+- **Reloading definitions.** The runtime caches one loop per agent *name*. Running a rebuilt `Agent` with the same name (for example, after its Markdown changed) replaces the cached loop, so rebuilding every agent on each reload doesn't grow the cache. `runtime.forget(agent)` / `forget(name)` and `runtime.clear()` drop cached loops explicitly, delegates' included, for example for agents you've removed. Runs already in flight finish normally on the loop they started with.
 - **`runtime.run(agent, LoopRequest.builder()...)`** gives full control of the request (files, `onMessage`, cost and time bounds). The agent's profile is always applied.
 
 ## Usage examples
@@ -581,6 +599,7 @@ With `AgentRuntime`, use `Agent.builder(...).delegateTo(otherAgent)`. At a lower
 - Its status updates are forwarded, prefixed `[legal]`.
 - Its step and cost limits are its own.
 - Chains are capped at `DelegationTools.MAX_DEPTH` (3), so agents that delegate to each other can't recurse forever.
+- **Many delegates.** The tool's description lists each delegate on one line, as name plus the first line of its description, cut to `DelegationTools.MAX_SUMMARY_CHARS` (160). The `agent` parameter is an enum of the valid names, and an unknown name is a fixable error listing them. Keep descriptions to one informative line: with dozens of delegates, this list is most of the tool's size. With about 40 delegates it comes to 2–3k characters. Some providers may limit how long a tool description can be; this hasn't been checked against each one (see ROADMAP.md).
 
 ### The web: `web_fetch` and `web_search`
 

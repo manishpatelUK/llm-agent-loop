@@ -7,9 +7,12 @@ import io.github.manishpateluk.llmagentloop.search.KnowledgeSearch;
 import io.github.manishpateluk.llmagentloop.workspace.ScopedWorkspace;
 import io.github.manishpateluk.llmagentloop.workspace.WorkspaceFile;
 
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * Everything a {@link ToolHandler} knows about the run calling it. Because one agent serves many
@@ -54,6 +57,11 @@ public record ToolContext(
         /** Semantic search over the run's workspace; {@link KnowledgeSearch#NONE} if it isn't configured. */
         default KnowledgeSearch knowledge() {
             return KnowledgeSearch.NONE;
+        }
+
+        /** The run's tool state behind {@link ToolContext#runState}; a context without a run gets a fresh, unshared map. */
+        default Map<String, Object> state() {
+            return new ConcurrentHashMap<>();
         }
     }
 
@@ -100,5 +108,18 @@ public record ToolContext(
      */
     public KnowledgeSearch knowledge() {
         return run.knowledge();
+    }
+
+    /**
+     * State a tool keeps for the rest of this run, shared by all its tool calls (including in
+     * sub-tasks and plan steps, but not in delegated agents' runs): the value under {@code key},
+     * created with {@code initial} on first use. Values must be safe for concurrent use. Prefix keys
+     * with your tool's name to avoid clashes.
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T runState(String key, Supplier<T> initial) {
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(initial, "initial");
+        return (T) run.state().computeIfAbsent(key, k -> initial.get());
     }
 }

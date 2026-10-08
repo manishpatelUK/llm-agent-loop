@@ -6,6 +6,7 @@ import io.github.manishpateluk.llmagentloop.LoopRequest;
 import io.github.manishpateluk.llmagentloop.RunHandle;
 import io.github.manishpateluk.llmagentloop.Scope;
 import io.github.manishpateluk.llmagentloop.skill.Skill;
+import io.github.manishpateluk.llmagentloop.skill.SkillLoader;
 import io.github.manishpateluk.llmagentloop.tool.ToolContext;
 import io.github.manishpateluk.llmagentloop.tool.ToolRegistry;
 import io.github.manishpateluk.llmagentloop.tool.builtin.AgentDelegate;
@@ -40,14 +41,26 @@ import java.util.function.Consumer;
  *         error -> reportFailure(error));
  * }</pre>
  *
- * <p>Each agent gets the base loop's tools, plus its skills' tools, its own tools, and — if it has
- * delegates — {@code delegate_to_agent}; later ones win on a name clash. Delegated agents run on
- * this same runtime, with the same scope.
+ * <p>Each agent gets the base loop's tools, plus its skills' tools (inlined and on-demand), its own
+ * tools, {@code load_skill} if it has on-demand skills, and {@code delegate_to_agent} if it has
+ * delegates; later ones win on a name clash. Delegated agents run on this same runtime, with the
+ * same scope.
+ *
+ * <p><b>Reloading definitions.</b> The runtime caches one loop per agent <em>name</em>. Running a
+ * different {@code Agent} instance with the same name (say, rebuilt after its Markdown changed)
+ * replaces the cached loop, so rebuilding every agent on a reload neither grows the cache nor keeps
+ * stale loops alive; delegates are resolved by the delegating agent's own {@code Agent} instances.
+ * {@link #forget} and {@link #clear} drop cached loops explicitly, e.g. for agents that were removed.
+ * All of this is safe while runs are in flight: a run that already has its loop finishes on it.
  */
 public final class AgentRuntime {
 
     private final AgentLoop base;
-    private final Map<Agent, AgentLoop> loops = new ConcurrentHashMap<>();
+    /** A cached loop and the exact {@code Agent} instance it was built for. */
+    private record Cached(Agent agent, AgentLoop loop) {
+    }
+
+    private final Map<String, Cached> loops = new ConcurrentHashMap<>();
 
     /** {@code base} supplies the router, memory, workspace and settings, plus tools shared by every agent. */
     public AgentRuntime(AgentLoop base) {
@@ -100,23 +113,57 @@ public final class AgentRuntime {
         };
     }
 
-    /** The loop {@code agent} runs on: built once, then reused for every run of it. */
+    /**
+     * Drops the cached loop for {@code agent}'s name, whichever instance it was built for. The next
+     * run of an agent with that name builds a fresh one. Returns whether anything was cached.
+     */
+    public boolean forget(Agent agent) {
+        return forget(Objects.requireNonNull(agent, "agent").name());
+    }
+
+    /** Drops the cached loop for the agent called {@code name}; see {@link #forget(Agent)}. */
+    public boolean forget(String name) {
+        return loops.remove(Objects.requireNonNull(name, "name")) != null;
+    }
+
+    /** Drops every cached loop, delegates' included. Runs in flight finish on the loops they have. */
+    public void clear() {
+        loops.clear();
+    }
+
+    /** How many agents currently have a cached loop. */
+    public int cachedAgents() {
+        return loops.size();
+    }
+
+    /**
+     * The loop {@code agent} runs on: built once per instance, then reused for every run of it.
+     * A different instance with the same name replaces it.
+     */
     AgentLoop loopFor(Agent agent) {
         Objects.requireNonNull(agent, "agent");
-        AgentLoop existing = loops.get(agent);
-        if (existing != null) {
-            return existing;
+        Cached existing = loops.get(agent.name());
+        if (existing != null && existing.agent() == agent) {
+            return existing.loop();
         }
-        // Built outside computeIfAbsent: building may recurse into loopFor for delegate agents.
-        AgentLoop built = base.withTools(registryFor(agent));
-        AgentLoop raced = loops.putIfAbsent(agent, built);
-        return raced != null ? raced : built;
+        // Built outside compute: building may recurse into loopFor for delegate agents.
+        Cached built = new Cached(agent, base.withTools(registryFor(agent)));
+        Cached winner = loops.compute(agent.name(),
+                (name, current) -> current != null && current.agent() == agent ? current : built);
+        return winner.loop();
     }
 
     private ToolRegistry registryFor(Agent agent) {
         ToolRegistry registry = new ToolRegistry().registerAll(base.tools().all());
         for (Skill skill : agent.skills()) {
             registry.registerAll(skill.tools());
+        }
+        // On-demand skills' tools are registered up front: only their instructions wait for load_skill.
+        for (Skill skill : agent.onDemandSkills()) {
+            registry.registerAll(skill.tools());
+        }
+        if (!agent.onDemandSkills().isEmpty()) {
+            registry.register(SkillLoader.loadSkill(agent.onDemandSkills()));
         }
         registry.registerAll(agent.tools());
 

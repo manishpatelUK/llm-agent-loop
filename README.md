@@ -168,11 +168,15 @@ Implemented so far (Java):
   full guide to implementing your own `MemoryStore`, `Workspace` and tools.
 - **Agents defined in Markdown** (`io.github.manishpateluk.llmagentloop.agent`) — an `Agent` is
   a reusable definition: Markdown instructions (with optional front matter for name, description,
-  plan mode and step cap), `Skill`s, its own tools, and other agents it may delegate to. It holds
+  plan mode and step cap, plus any keys of the application's own, kept in `Agent.metadata()`),
+  `Skill`s inlined in the prompt or loaded on demand with `load_skill`, its own tools, and other
+  agents it may delegate to (one compact line each, the name constrained to an enum). It holds
   no user data or infrastructure, so one definition serves every user. An `AgentRuntime` holds the
   shared router, memory, workspace and base tools and runs any agent for any `Scope`
-  (`run`/`runAndWait`), building each agent's tool set once; agents delegating to each other run on
-  the same runtime with the same scope. Session management stays with the implementor.
+  (`run`/`runAndWait`), building each agent's tool set once and caching it by agent name, so a
+  rebuilt definition replaces its cached loop (`forget`/`clear` drop them); agents delegating to
+  each other run on the same runtime with the same scope. Session management stays with the
+  implementor.
 - **Skills** (`io.github.manishpateluk.llmagentloop.skill`) — a `Skill` is tools plus Markdown
   guidance on using them well, folded into the agent's instructions. Ready-made: `Skills.memory()`,
   `files()`, `spreadsheets()`, `dataAnalysis()`, `web(...)`, `askingTheUser(...)`.
