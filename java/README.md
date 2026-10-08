@@ -123,7 +123,18 @@ AgentLoopResult result = runtime.runAndWait(assistant, userMessage, scope);
   ```
 - **Tools.** Each agent gets the runtime's base tools (those on the `AgentLoop` you pass in), plus its skills' tools, plus its own. Each agent's loop is built once and reused.
 - **Reloading definitions.** The runtime caches one loop per agent *name*. Running a rebuilt `Agent` with the same name (for example, after its Markdown changed) replaces the cached loop, so rebuilding every agent on each reload doesn't grow the cache. `runtime.forget(agent)` / `forget(name)` and `runtime.clear()` drop cached loops explicitly, delegates' included, for example for agents you've removed. Runs already in flight finish normally on the loop they started with.
-- **`runtime.run(agent, LoopRequest.builder()...)`** gives full control of the request (files, `onMessage`, cost and time bounds). The agent's profile is always applied.
+- **`runtime.run(agent, LoopRequest.builder()...)`** gives full control of the request (files, `onMessage`, cost and time bounds). The agent's profile is always applied: its instructions, plan mode and step cap are the agent's own. `routerConfig` on the request still overrides the agent's routing for that run.
+- **Per-run operating context.** `LoopRequest.operatingContext(text)` adds context for this run only to the system prompt, after the agent's instructions, under "Operating context for this run". It's for what changes every turn while the agent definition doesn't: who the user is, their company, what's on file. It's shown as written (Markdown) and treated as your trusted content. Delegated runs inherit it by default, since a delegate usually needs the same user context. To opt a delegate out, use `runtime.delegate(agent, false)` with `Agent.Builder.delegateTo(AgentDelegate)`, or `AgentDelegate.of(name, description, loop, profile, false)`. Tools can read it with `ToolContext.operatingContext()`.
+
+  ```java
+  runtime.run(chatAgent, LoopRequest.builder()
+      .prompt(userMessage)
+      .scope(scope)
+      .operatingContext("User: " + user.name() + ", " + user.role() + " at " + company.name() + "
+"
+          + "On file: " + String.join(", ", documentTitles))
+      .onResult(...).onError(...));
+  ```
 
 ## Usage examples
 
@@ -161,6 +172,7 @@ import io.github.manishpateluk.llmagentloop.LoopRequest;
 loop.run(LoopRequest.builder()
     .prompt("Draft a launch announcement for our new pricing page.")
     .agentProfile(myAgentProfile)          // optional — see below
+    .operatingContext(userContext)         // optional — context for this run only, e.g. who the user is
     .attachments(List.of(InputFile.of("brief.pdf", bytes))) // optional — see "Chat sessions" below
     .history(earlierTurns)                 // optional — or let a ConversationStore keep it
     .routerConfig(myRouterConfig)          // optional — which models, in what order
@@ -598,6 +610,7 @@ With `AgentRuntime`, use `Agent.builder(...).delegateTo(otherAgent)`. At a lower
 - The delegated run uses the **same scope**: same user, memory and workspace.
 - Its status updates are forwarded, prefixed `[legal]`.
 - Its step and cost limits are its own.
+- It inherits the delegating run's `operatingContext` unless the delegate opts out (`runtime.delegate(agent, false)`, or `AgentDelegate.of(..., false)`).
 - Chains are capped at `DelegationTools.MAX_DEPTH` (3), so agents that delegate to each other can't recurse forever.
 - **Many delegates.** The tool's description lists each delegate on one line, as name plus the first line of its description, cut to `DelegationTools.MAX_SUMMARY_CHARS` (160). The `agent` parameter is an enum of the valid names, and an unknown name is a fixable error listing them. Keep descriptions to one informative line: with dozens of delegates, this list is most of the tool's size. With about 40 delegates it comes to 2–3k characters. Some providers may limit how long a tool description can be; this hasn't been checked against each one (see ROADMAP.md).
 

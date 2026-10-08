@@ -75,7 +75,9 @@ public final class AgentRuntime {
     /**
      * Runs {@code agent} asynchronously with full control over the request (files, status
      * messages, cost and time bounds...). The agent's profile replaces any {@code agentProfile}
-     * set on the builder.
+     * set on the builder: its instructions, plan mode and step cap are the agent's own. Per-run
+     * context (who the user is, what's on file) goes in {@code LoopRequest.operatingContext}, and
+     * {@code routerConfig} still overrides the agent's routing for the run.
      */
     public RunHandle run(Agent agent, LoopRequest.LoopRequestBuilder request) {
         return loopFor(agent).run(request.agentProfile(agent.profile()).build());
@@ -91,8 +93,20 @@ public final class AgentRuntime {
         return loopFor(agent).runAndWait(request.agentProfile(agent.profile()));
     }
 
-    /** {@code agent} as something other agents (or your own tools) can delegate to. */
+    /**
+     * {@code agent} as something other agents (or your own tools) can delegate to. Delegated runs
+     * inherit the delegating run's {@code LoopRequest.operatingContext}; see {@link #delegate(Agent, boolean)}.
+     */
     public AgentDelegate delegate(Agent agent) {
+        return delegate(agent, true);
+    }
+
+    /**
+     * {@link #delegate(Agent)}, choosing whether delegated runs inherit the delegating run's
+     * operating context. Pass the result to {@code Agent.Builder.delegateTo(AgentDelegate)} to opt
+     * one delegate out.
+     */
+    public AgentDelegate delegate(Agent agent, boolean inheritOperatingContext) {
         Objects.requireNonNull(agent, "agent");
         return new AgentDelegate() {
             @Override
@@ -108,7 +122,8 @@ public final class AgentRuntime {
             @Override
             public String run(String task, ToolContext context) {
                 // Resolved per call, so agents can delegate to each other in either order of construction.
-                return AgentDelegate.of(agent.name(), description(), loopFor(agent), agent.profile()).run(task, context);
+                return AgentDelegate.of(agent.name(), description(), loopFor(agent), agent.profile(), inheritOperatingContext)
+                        .run(task, context);
             }
         };
     }

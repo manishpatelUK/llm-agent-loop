@@ -35,11 +35,22 @@ public interface AgentDelegate {
 
     /**
      * Delegates to {@code loop} running {@code profile}. The delegated run uses the same
-     * {@code Scope} as the delegating one — same user, same memory and workspace — and its status
-     * updates are forwarded, prefixed with this delegate's name. Its cost and step limits are its
-     * own ({@code profile.maxSteps()}); they don't count against the delegating run's.
+     * {@code Scope} as the delegating one — same user, same memory and workspace — and the same
+     * {@code LoopRequest.operatingContext}, and its status updates are forwarded, prefixed with this
+     * delegate's name. Its cost and step limits are its own ({@code profile.maxSteps()}); they don't
+     * count against the delegating run's.
      */
     static AgentDelegate of(String name, String description, AgentLoop loop, AgentProfile profile) {
+        return of(name, description, loop, profile, true);
+    }
+
+    /**
+     * {@link #of(String, String, AgentLoop, AgentProfile)}, choosing whether the delegated run
+     * inherits the delegating run's operating context: {@code false} for delegates that should see
+     * only the task, e.g. ones that shouldn't learn who the user is.
+     */
+    static AgentDelegate of(String name, String description, AgentLoop loop, AgentProfile profile,
+                            boolean inheritOperatingContext) {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(description, "description");
         Objects.requireNonNull(loop, "loop");
@@ -61,6 +72,7 @@ public interface AgentDelegate {
                     result = loop.runAndWait(LoopRequest.builder()
                             .prompt(task)
                             .agentProfile(profile)
+                            .operatingContext(inheritOperatingContext ? context.operatingContext() : null)
                             .scope(context.scope())
                             .onMessage(message -> context.report(message.type(), "[" + name + "] " + message.message())));
                 } catch (AgentLoopStepLimitExceededException e) {

@@ -20,6 +20,12 @@ import java.util.function.Consumer;
  *
  * @param prompt          required — what the caller wants done (in a chat: the user's message)
  * @param agentProfile    optional; see {@link AgentProfile}
+ * @param operatingContext optional context for this run only, added to the system instructions after
+ *                        the profile's: e.g. who the user is, their company, what's on file. For things
+ *                        that change from turn to turn while the agent definition doesn't. Unlike
+ *                        {@link AgentProfile#operatingContext()} it's shown as written (Markdown), not as
+ *                        JSON. Delegated runs ({@code delegate_to_agent}) inherit it unless their
+ *                        {@code AgentDelegate} opts out. Treated as trusted content.
  * @param attachments     optional files the user supplied, as bytes — images, PDFs, spreadsheets,
  *                        CSVs, documents. Images and PDFs are shown to the model directly (for models
  *                        that can take them); small text files (CSV, Markdown, JSON...) are included
@@ -80,6 +86,7 @@ import java.util.function.Consumer;
 public record LoopRequest(
         String prompt,
         AgentProfile agentProfile,
+        String operatingContext,
         List<InputFile> attachments,
         Boolean saveAttachments,
         Boolean requireAttachmentSupport,
@@ -110,6 +117,7 @@ public record LoopRequest(
         saveAttachments = saveAttachments == null ? Boolean.TRUE : saveAttachments;
         requireAttachmentSupport = requireAttachmentSupport != null && requireAttachmentSupport;
         history = history == null ? null : List.copyOf(history);
+        operatingContext = operatingContext == null || operatingContext.isBlank() ? null : operatingContext.strip();
         if (answerSchema != null && !"object".equals(answerSchema.get("type"))) {
             throw new IllegalArgumentException("answerSchema's top level must be {\"type\": \"object\", ...}");
         }

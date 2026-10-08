@@ -81,7 +81,9 @@ Implemented so far (Java):
     fully-assembled `LlmRouter` (e.g. one with its own `RequestInterceptor` for something other
     than compression) and want no factory logic in the way; they do nothing with compression
     automatically.
-  - `LoopRequest` carries the prompt, an optional `AgentProfile`, optional attachments
+  - `LoopRequest` carries the prompt, an optional `AgentProfile`, an optional per-run
+    `operatingContext` (added to the system prompt; inherited by delegated runs unless they opt
+    out), optional attachments
     (`InputFile`s, from bytes or streams), optional chat history and `RouterConfig`, and the run's
     three async callbacks: `onResult` (an `AgentLoopResult` — the final `llm-router`
     `Response` plus the full `Execution` trace), `onError`, and `onMessage` — status updates

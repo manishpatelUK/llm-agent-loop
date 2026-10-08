@@ -59,6 +59,11 @@ public record ToolContext(
             return KnowledgeSearch.NONE;
         }
 
+        /** The run's {@code LoopRequest.operatingContext}; {@code null} if it has none. */
+        default String operatingContext() {
+            return null;
+        }
+
         /** The run's tool state behind {@link ToolContext#runState}; a context without a run gets a fresh, unshared map. */
         default Map<String, Object> state() {
             return new ConcurrentHashMap<>();
@@ -108,6 +113,15 @@ public record ToolContext(
      */
     public KnowledgeSearch knowledge() {
         return run.knowledge();
+    }
+
+    /**
+     * The run's per-run operating context ({@code LoopRequest.operatingContext}), or {@code null}:
+     * e.g. for passing the same user context on to work the tool starts. {@code AgentDelegate.of}
+     * uses it so delegated runs inherit it.
+     */
+    public String operatingContext() {
+        return run.operatingContext();
     }
 
     /**
