@@ -11,8 +11,7 @@ far. Remove an item once it ships (and record it in the README's Status section)
 - **Richer documents.** Images in Word/PDF/PowerPoint output, embedded fonts for non-Latin scripts in
   PDFs, real Word list numbering and heading styles, 16:9 slide layouts, and more chart types.
 - **More from semantic search.** Shipped: embeddings, indexing modes, `knowledge_search`, hybrid
-  memory. Still to do: ready-made production `VectorIndex`es (pgvector first), embedding prices in
-  `llm-router` (recorded as 0 cents today), reranking, OCR so scanned PDFs and images become
+  memory. Still to do: ready-made production `VectorIndex`es (pgvector first), reranking, OCR so scanned PDFs and images become
   searchable, spreadsheet indexing, and searching tenant-wide and user-level knowledge together
   (see "Layered knowledge" below).
 - **Background, scheduled and resumable work.** Runs live on in-process virtual threads: nothing

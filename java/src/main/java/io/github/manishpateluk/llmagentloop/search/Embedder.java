@@ -28,15 +28,25 @@ public interface Embedder {
      * @param model       which model produced them, e.g. {@code openai/text-embedding-3-small}
      * @param provider    who served them, if known
      * @param inputTokens tokens consumed, for metering
+     * @param costUsdMicros what the call cost in micro-dollars (millionths of a dollar), for metering;
+     *                      0 if unknown
      */
-    record Embeddings(List<float[]> vectors, String model, Provider provider, long inputTokens) {
+    record Embeddings(List<float[]> vectors, String model, Provider provider, long inputTokens, long costUsdMicros) {
         public Embeddings {
             vectors = List.copyOf(Objects.requireNonNull(vectors, "vectors"));
             Objects.requireNonNull(model, "model");
         }
+
+        /** Embeddings whose cost isn't known (metered as 0). */
+        public Embeddings(List<float[]> vectors, String model, Provider provider, long inputTokens) {
+            this(vectors, model, provider, inputTokens, 0);
+        }
     }
 
-    /** Embeds via {@code router}, with its first available embedding provider's default model. */
+    /**
+     * Embeds via {@code router}, with its first available embedding provider's default model. Cost
+     * comes from {@code llm-router}'s embedding prices (0 for a model it doesn't price).
+     */
     static Embedder router(LlmRouter router) {
         return router(router, null);
     }
@@ -50,7 +60,8 @@ public interface Embedder {
                     .route(model == null ? null : List.of(model))
                     .build());
             return new Embeddings(response.getVectors(), response.getProviderUsed() + "/" + response.getModelUsed(),
-                    response.getProviderUsed(), response.getUsage() == null ? 0 : response.getUsage().getInputTokens());
+                    response.getProviderUsed(), response.getUsage() == null ? 0 : response.getUsage().getInputTokens(),
+                    response.getUsage() == null ? 0 : response.getUsage().getEstimatedCostUsdMicros());
         };
     }
 }

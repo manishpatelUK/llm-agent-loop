@@ -551,7 +551,6 @@ public final class AgentLoop {
         /** The thread whose LLM call is in flight — what any compression reported mid-call is attributed to. */
         private int currentThread = 0;
         private int stepCount = 0;
-        private int accumulatedCostUsdCents = 0;
         /** Every model call this run made, summed. */
         private UsageTotals runUsage = UsageTotals.ZERO;
         /** Where outside content has entered this run (tool names, "attachments"), in order. */
@@ -1206,7 +1205,8 @@ public final class AgentLoop {
             Usage usage = response.getUsage();
             UsageRecord record = new UsageRecord(executionId, scope, purpose, response.getProviderUsed(), response.getModelUsed(),
                     usage == null ? 0 : usage.getInputTokens(), usage == null ? 0 : usage.getOutputTokens(),
-                    usage == null ? 0 : usage.getEstimatedCostUsdCents(), Instant.now());
+                    usage == null ? 0 : usage.getEstimatedCostUsdCents(), usage == null ? 0 : usage.getEstimatedCostUsdMicros(),
+                    Instant.now());
             runUsage = runUsage.plus(record);
             settings.usageMeter().record(record);
         }
@@ -1299,12 +1299,9 @@ public final class AgentLoop {
          * every nested call (plan steps, sub-tasks) straight back to {@link #execute()} in one go.
          */
         private void checkBudgets(int thread, Response response) {
-            if (response.getUsage() != null) {
-                accumulatedCostUsdCents += response.getUsage().getEstimatedCostUsdCents();
-            }
-
+            // Everything the run has spent so far, in micro-dollars so many small calls aren't rounded away.
             Integer maxCost = request.maxCostUsdCents();
-            if (maxCost != null && accumulatedCostUsdCents >= maxCost) {
+            if (maxCost != null && runUsage.costUsdMicros() >= maxCost * 10_000L) {
                 emit(thread, MessageType.WARNING, "Stopping early: cost limit reached.");
                 throw new BudgetExceeded(thread, TerminationReason.COST_LIMIT_REACHED, response);
             }

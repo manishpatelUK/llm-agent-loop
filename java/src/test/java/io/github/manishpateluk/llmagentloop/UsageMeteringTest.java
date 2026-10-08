@@ -48,7 +48,8 @@ class UsageMeteringTest {
         loop.runAndWait(LoopRequest.builder().prompt("c").scope(BOB).agentProfile(RECURSIVE));
 
         InMemoryUsageMeter meter = (InMemoryUsageMeter) loop.usageMeter();
-        assertThat(meter.totals(ALICE.atLevel(ScopeLevel.USER))).isEqualTo(new UsageTotals(2, 200, 40, totalsCost(meter, ALICE)));
+        assertThat(meter.totals(ALICE.atLevel(ScopeLevel.USER))).isEqualTo(new UsageTotals(2, 200, 40, totalsCost(meter, ALICE),
+                meter.totals(ALICE.atLevel(ScopeLevel.USER)).costUsdMicros()));
         assertThat(meter.totals(ALICE)).isEqualTo(meter.totals(ALICE.atLevel(ScopeLevel.USER)));
         assertThat(meter.totals(ALICE.atLevel(ScopeLevel.TENANT)).calls()).isEqualTo(3);
         assertThat(meter.totals(BOB).inputTokens()).isEqualTo(100);

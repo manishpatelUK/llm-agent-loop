@@ -507,7 +507,7 @@ With semantic search on:
 
 **Indexing never breaks the agent's work.** If a file can't be indexed, the write still succeeds and a `WARNING` status message says so. Memory saves are kept even if embedding fails, and memory search falls back to keyword results.
 
-**Defaults.** Embeddings go through the loop's own `llm-router` (`Embedder.router(router)`, OpenAI's `text-embedding-3-small` unless you pass a `RouteEntry`). Vectors go in an `InMemoryVectorIndex`: exact cosine search in the heap, fine for development and modest volumes, but lost on restart. Every embedding call is metered as `UsagePurpose.EMBEDDING`. Calls made during a run, including indexing, `knowledge_search` and hybrid memory saves, searches and recall, are billed to the run and counted in `result.usage()`. `ON_WRITE_BACKGROUND` indexing, and calls from your own code outside a run, are billed to the scope with no execution id. `llm-router` has no embedding prices yet, so the cost is recorded as 0 and the tokens are still counted.
+**Defaults.** Embeddings go through the loop's own `llm-router` (`Embedder.router(router)`, OpenAI's `text-embedding-3-small` unless you pass a `RouteEntry`). Vectors go in an `InMemoryVectorIndex`: exact cosine search in the heap, fine for development and modest volumes, but lost on restart. Every embedding call is metered as `UsagePurpose.EMBEDDING`. Calls made during a run, including indexing, `knowledge_search` and hybrid memory saves, searches and recall, are billed to the run and counted in `result.usage()`. `ON_WRITE_BACKGROUND` indexing, and calls from your own code outside a run, are billed to the scope with no execution id. Cost comes from `llm-router`'s embedding prices, in `UsageRecord.costUsdMicros` (millionths of a dollar), since an embedding call usually costs well under a cent. A model `llm-router` doesn't price is metered at 0, with its tokens still counted. A custom `Embedder` reports its own cost in `Embeddings.costUsdMicros`.
 
 **From your own code.** `loop.semanticSearch()` gives you the bound instance:
 
@@ -1059,6 +1059,8 @@ A `UsageMeter` is one method, `record(UsageRecord)`, called on the run's thread 
 - **Catch your own exceptions.** An exception it throws ends the run.
 
 Group records by `record.scope().atLevel(ScopeLevel.TENANT)` or `.atLevel(ScopeLevel.USER)` for per-tenant and per-user billing.
+
+**Sum `costUsdMicros`, not `costUsdCents`.** Each record carries its cost both ways. Whole cents round most small calls to 0, and an embedding call is typically a few thousandths of a cent. `UsageTotals.costUsdMicros()` is the accurate total, and `costUsdCentsRounded()` gives it in cents.
 
 ## Learn more
 

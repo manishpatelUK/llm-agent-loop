@@ -68,7 +68,9 @@ import java.util.function.Consumer;
  *                        behavior. When set, cost is checked after each step completes (not mid-step,
  *                        so the bound is approximate, not exact); once accumulated cost meets or
  *                        exceeds it, the run stops and returns whatever answer it has so far,
- *                        rather than continuing to the next step.
+ *                        rather than continuing to the next step. Accumulated cost is everything the run
+ *                        has been metered for so far (steps, planning, compression, embeddings), summed
+ *                        in micro-dollars so that many sub-cent calls still add up.
  * @param maxDuration     optional wall-clock bound on the whole run, checked after each step;
  *                        tool calls are also cut short when they'd run past it. {@code null} (the
  *                        default) means unbounded.

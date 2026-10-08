@@ -337,7 +337,8 @@ public final class SemanticSearch {
                     + texts.size() + " texts");
         }
         UsageRecord record = new UsageRecord(attribution.executionId(), attribution.scope(), UsagePurpose.EMBEDDING,
-                embeddings.provider(), embeddings.model(), embeddings.inputTokens(), 0, 0, Instant.now());
+                embeddings.provider(), embeddings.model(), embeddings.inputTokens(), 0,
+                Math.round(embeddings.costUsdMicros() / 10_000.0), embeddings.costUsdMicros(), Instant.now());
         meter.record(record);
         if (attribution.runUsage() != null) {
             attribution.runUsage().accept(record);

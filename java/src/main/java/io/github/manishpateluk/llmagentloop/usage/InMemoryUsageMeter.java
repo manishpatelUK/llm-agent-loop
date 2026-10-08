@@ -22,8 +22,8 @@ public final class InMemoryUsageMeter implements UsageMeter {
 
     @Override
     public void record(UsageRecord record) {
-        totals.merge(record.scope().atLevel(ScopeLevel.TENANT), UsageTotals.ZERO.plus(record), InMemoryUsageMeter::sum);
-        totals.merge(record.scope().atLevel(ScopeLevel.USER), UsageTotals.ZERO.plus(record), InMemoryUsageMeter::sum);
+        totals.merge(record.scope().atLevel(ScopeLevel.TENANT), UsageTotals.ZERO.plus(record), UsageTotals::plus);
+        totals.merge(record.scope().atLevel(ScopeLevel.USER), UsageTotals.ZERO.plus(record), UsageTotals::plus);
     }
 
     /**
@@ -40,8 +40,4 @@ public final class InMemoryUsageMeter implements UsageMeter {
         totals.clear();
     }
 
-    private static UsageTotals sum(UsageTotals a, UsageTotals b) {
-        return new UsageTotals(a.calls() + b.calls(), a.inputTokens() + b.inputTokens(),
-                a.outputTokens() + b.outputTokens(), a.costUsdCents() + b.costUsdCents());
-    }
 }
