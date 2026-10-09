@@ -7,7 +7,7 @@
 
   <groupId>io.github.manishpateluk</groupId>
   <artifactId>llm-agent-loop</artifactId>
-  <version>1.0.0</version>
+  <version>1.0.1</version>
   <packaging>jar</packaging>
 
   <name>LLM Agent Loop</name>
@@ -41,7 +41,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.source>25</maven.compiler.source>
     <maven.compiler.target>25</maven.compiler.target>
-    <llm-router.version>1.0.5</llm-router.version>
+    <llm-router.version>1.0.6</llm-router.version>
     <lombok.version>1.18.38</lombok.version>
     <jackson.version>3.2.3</jackson.version>
     <jsoup.version>1.23.2</jsoup.version>
