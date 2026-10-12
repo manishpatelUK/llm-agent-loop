@@ -190,14 +190,16 @@ class SemanticSearchTest {
     }
 
     @Test
-    void knowledgeSearchWithoutSemanticSearchConfiguredFailsClearly() {
+    void knowledgeSearchWithoutSemanticSearchConfiguredIsReportedClearly() {
         MockModel model = new MockModel().callTool(KnowledgeTools.SEARCH, SEARCH_CANCEL).reply("Can't search.");
         AgentLoop loop = model.loopBuilder().tools(new ToolRegistry().registerAll(KnowledgeTools.all())).build();
 
         TestRun run = TestRuns.run(loop, request("Search"));
 
-        // Like memory and workspace tools without a store, it's a configuration error that ends the run.
-        assertThat(run.error()).hasMessageContaining("Semantic search isn't configured");
+        // A configuration error, but like any unexpected tool failure the model is told and the run carries on.
+        assertThat(run.error()).isNull();
+        assertThat(toolResult(model, 1)).startsWith("Error: knowledge_search failed: IllegalStateException: Semantic search isn't configured");
+        assertThat(run.answer()).isEqualTo("Can't search.");
         assertThat(loop.semanticSearch()).isNull();
     }
 

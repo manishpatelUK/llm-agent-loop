@@ -2,12 +2,14 @@ package io.github.manishpateluk.llmagentloop.tool.web;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.github.manishpateluk.llmrouter.model.ToolDefinition;
 import io.github.manishpateluk.llmagentloop.Scope;
 import io.github.manishpateluk.llmagentloop.memory.MemoryStore;
 import io.github.manishpateluk.llmagentloop.tool.RegisteredTool;
 import io.github.manishpateluk.llmagentloop.tool.ToolContext;
 import io.github.manishpateluk.llmagentloop.tool.ToolInputException;
 import io.github.manishpateluk.llmagentloop.workspace.InMemoryWorkspace;
+import io.github.manishpateluk.llmagentloop.workspace.Workspace;
 import io.github.manishpateluk.llmagentloop.workspace.WorkspaceLimits;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -92,6 +94,36 @@ class WebToolsTest {
         String saved = fetch(LOCAL, Map.of("url", base + "/report.pdf", "save_as", "downloads/report.pdf"));
         assertThat(saved).contains("Saved 13 bytes (application/pdf) to downloads/report.pdf");
         assertThat(context.workspace().require("downloads/report.pdf").mediaType()).isEqualTo("application/pdf");
+    }
+
+    @Test
+    void withoutAWorkspaceSaveAsIsNeitherOfferedNorSuggestedAndIsAFixableError() {
+        Scope scope = new Scope("acme", "alice", null);
+        context = new ToolContext(UUID.randomUUID(), 0, Scope.of("acme", "alice", "s1"),
+                MemoryStore.NONE.scopedTo(scope), Workspace.NONE.scopedTo(scope, WorkspaceLimits.DEFAULT));
+
+        assertThat(fetch(LOCAL, Map.of("url", base + "/report.pdf"))).contains("application/pdf").doesNotContain("save_as");
+        assertThatThrownBy(() -> fetch(LOCAL, Map.of("url", base + "/report.pdf", "save_as", "downloads/report.pdf")))
+                .isInstanceOf(ToolInputException.class).hasMessageContaining("No workspace is configured");
+    }
+
+    @Test
+    void saveAsIsOnlyInTheDefinitionOfferedWithAWorkspace() {
+        RegisteredTool tool = WebTools.fetch();
+
+        ToolDefinition with = tool.definitionFor(true).orElseThrow();
+        ToolDefinition without = tool.definitionFor(false).orElseThrow();
+
+        assertThat(properties(with)).containsKey("save_as");
+        assertThat(with.getDescription()).contains("save_as");
+        assertThat(properties(without)).containsOnlyKeys("url", "offset", "max_chars");
+        assertThat(without.getParameters().get("required")).isEqualTo(List.of("url"));
+        assertThat(without.getDescription()).doesNotContain("save_as", "workspace");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> properties(ToolDefinition definition) {
+        return (Map<String, Object>) definition.getParameters().get("properties");
     }
 
     @Test
@@ -194,7 +226,7 @@ class WebToolsTest {
     }
 
     @Test
-    void rateLimitingIsFixableButABadKeyEndsTheRun() {
+    void rateLimitingIsFixableButABadKeyIsAFailure() {
         server.createContext("/limited", exchange -> respond(exchange, 429, "application/json", "{}"));
         server.createContext("/unauthorized", exchange -> respond(exchange, 401, "application/json", "{\"error\":\"bad key\"}"));
 

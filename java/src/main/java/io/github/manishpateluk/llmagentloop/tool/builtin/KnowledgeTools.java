@@ -54,6 +54,6 @@ public final class KnowledgeTools {
                                 .append(hit.text()).append("\n\n");
                     }
                     return out.toString().strip();
-                }).withUntrustedOutput();
+                }).withUntrustedOutput().withRequiresWorkspace();
     }
 }

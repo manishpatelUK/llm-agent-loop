@@ -65,7 +65,7 @@ public final class DocumentTools {
                                 "markdown", ToolSchemas.string("The document's content as Markdown."),
                                 "title", ToolSchemas.string("Optional document title, stored in the file's properties.")))
                         .build(),
-                DocumentTools::create);
+                DocumentTools::create).withRequiresWorkspace();
     }
 
     private static String create(Map<String, Object> args, ToolContext context) {
@@ -111,7 +111,7 @@ public final class DocumentTools {
                                 "max_chars", ToolSchemas.integer("Maximum characters to return, up to " + MAX_READ_CHARS
                                         + ". Defaults to " + DEFAULT_READ_CHARS + ".")))
                         .build(),
-                DocumentTools::read).withUntrustedOutput();
+                DocumentTools::read).withUntrustedOutput().withRequiresWorkspace();
     }
 
     private static String read(Map<String, Object> args, ToolContext context) {

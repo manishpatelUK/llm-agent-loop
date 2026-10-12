@@ -165,6 +165,11 @@ public final class ScopedWorkspace {
         return Collections.unmodifiableSet(new LinkedHashSet<>(changedPaths));
     }
 
+    /** Whether a real workspace backs this view — {@code false} for {@link Workspace#NONE}, where nothing can be written. */
+    public boolean isConfigured() {
+        return workspace != Workspace.NONE;
+    }
+
     /** The partition key this view is bound to (already reduced to its level). */
     public Scope scope() {
         return scope;

@@ -23,7 +23,11 @@ import java.util.Optional;
  */
 public interface Workspace {
 
-    /** Holds nothing: reads find nothing, and writing fails with a pointer to configure a real workspace. */
+    /**
+     * Holds nothing: reads find nothing, and writing fails with a {@link WorkspaceException} (which
+     * tools report back to the model). Configure a real one with {@code AgentLoop.builder().workspace(...)};
+     * without it, tools that need a workspace aren't offered to the model.
+     */
     Workspace NONE = new Workspace() {
         @Override
         public Optional<WorkspaceFile> read(Scope scope, String path) {
@@ -32,8 +36,7 @@ public interface Workspace {
 
         @Override
         public void write(Scope scope, WorkspaceFile file) {
-            throw new IllegalStateException(
-                    "No Workspace is configured: pass one to AgentLoop.builder().workspace(...) to use the workspace tools");
+            throw new WorkspaceException("No workspace is configured, so files can't be saved");
         }
 
         @Override

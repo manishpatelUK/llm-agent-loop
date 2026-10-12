@@ -25,7 +25,8 @@ import java.util.Map;
  * {@code workspace_search} — over the run's {@code Workspace}, scoped to the current user (or
  * whatever level the loop is configured with). Register with
  * {@code registry.registerAll(WorkspaceTools.all())}; they need
- * {@code AgentLoop.builder().workspace(...)} set, e.g. to an {@code InMemoryWorkspace}.
+ * {@code AgentLoop.builder().workspace(...)} set, e.g. to an {@code InMemoryWorkspace}, and aren't
+ * offered to the model without one.
  *
  * <p>Path safety and size limits are enforced by {@code ScopedWorkspace}; its refusals, like any
  * other fixable problem, come back to the model as an error result rather than ending the run.
@@ -241,7 +242,10 @@ public final class WorkspaceTools {
                 });
     }
 
-    /** Every workspace tool reports {@link WorkspaceException}s to the model, like {@link ToolInputException}s. */
+    /**
+     * Every workspace tool reports {@link WorkspaceException}s to the model, like {@link ToolInputException}s,
+     * and is only offered when the loop has a workspace.
+     */
     private static RegisteredTool tool(String name, String description, Map<String, Object> parameters, ToolHandler handler) {
         return new RegisteredTool(
                 ToolDefinition.builder().name(name).description(description).parameters(parameters).build(),
@@ -251,7 +255,7 @@ public final class WorkspaceTools {
                     } catch (WorkspaceException e) {
                         throw new ToolInputException(e.getMessage());
                     }
-                });
+                }).withRequiresWorkspace();
     }
 
     private static int countOccurrences(String text, String needle) {

@@ -148,4 +148,26 @@ class UsageCostTest {
         assertThat(usage.costUsdCents()).isZero();
         assertThat(usage.costUsdCentsRounded()).isEqualTo(1);
     }
+
+    @Test
+    void aToolThatKeepsFailingStillStopsAtTheCostLimit() {
+        AtomicInteger calls = new AtomicInteger();
+        MockModel model = new MockModel().usage(3_000, 0).otherwise(request -> Response.builder().content("")
+                .toolCalls(List.of(ToolCall.builder().id("f" + calls.incrementAndGet()).name("flaky").arguments(Map.of()).build()))
+                .build());
+        AgentLoop loop = model.loopBuilder().tools(new ToolRegistry().register(ToolDefinition.builder().name("flaky")
+                .description("Always fails").parameters(Map.of("type", "object")).build(), args -> {
+                    throw new IllegalStateException("upstream unavailable");
+                })).build();
+
+        TestRun run = TestRuns.run(loop, LoopRequest.builder().prompt("Keep going").agentProfile(MockModel.STEP_BY_STEP)
+                .routerConfig(RouterConfig.builder().route(List.of(RouteEntry.of(Provider.ANTHROPIC, CHAT))).build())
+                .maxCostUsdCents(1));
+
+        assertThat(run.error()).isNull();
+        assertThat(run.result().execution().terminationReason()).isEqualTo(TerminationReason.COST_LIMIT_REACHED);
+        assertThat(model.requests()).hasSize(4);
+        assertThat(MockModel.lastToolResult(model.requests().getLast()))
+                .isEqualTo("Error: flaky failed: IllegalStateException: upstream unavailable");
+    }
 }

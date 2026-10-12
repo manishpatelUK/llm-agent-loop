@@ -162,8 +162,12 @@ Implemented so far (Java):
   `ToolContext` whose memory and workspace are already bound to the run's scope, so a model can't
   reach another user's data; `ScopedWorkspace` enforces path safety (no `..`, absolute paths or
   drive letters) and `WorkspaceLimits` in front of any backend. A handler can throw
-  `ToolInputException` to hand a fixable problem back to the model as an `"Error: ..."` result
-  instead of ending the run. `AgentLoopResult.changedFiles()` lists the workspace files a run
+  `ToolInputException` to hand a fixable problem back to the model as an `"Error: ..."` result;
+  any other exception from a handler also comes back to the model (as `"Error: <tool> failed:
+  <exception class>: <message>"`, with a `WARNING` and `ToolInterceptor.failed`) rather than
+  ending the run. Without a workspace configured, tools that need one (`RegisteredTool.withRequiresWorkspace()`)
+  aren't offered to the model, and workspace-only parameters such as `web_fetch`'s `save_as`
+  (`withWorkspaceParameters(...)`) are dropped from their schemas. `AgentLoopResult.changedFiles()` lists the workspace files a run
   produced. `Scope.key()` gives implementors a stable, collision-safe storage key (e.g.
   `acme/alice/*`) for their own stores. The
   [Java README](java/README.md#extending-the-library-your-own-memory-workspace-and-tools) has a

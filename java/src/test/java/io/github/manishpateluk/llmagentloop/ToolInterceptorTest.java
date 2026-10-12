@@ -21,7 +21,6 @@ import static io.github.manishpateluk.llmagentloop.ScriptedModel.complete;
 import static io.github.manishpateluk.llmagentloop.ScriptedModel.lastToolResult;
 import static io.github.manishpateluk.llmagentloop.ScriptedModel.toolCall;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ToolInterceptorTest {
 
@@ -101,7 +100,7 @@ class ToolInterceptorTest {
     }
 
     @Test
-    void failedIsCalledWhenAToolBlowsUpAndTheFailureStillEndsTheRun() {
+    void failedIsCalledWhenAToolBlowsUpAndTheModelIsToldInstead() {
         AtomicReference<Throwable> seen = new AtomicReference<>();
         ToolRegistry tools = new ToolRegistry().register(definition("explode"), (args, context) -> {
             throw new IllegalStateException("database down");
@@ -112,10 +111,12 @@ class ToolInterceptorTest {
                 seen.set(error);
             }
         }).build();
-        model.respond(request -> toolCall("e", "explode", Map.of()));
+        model.respond(request -> lastToolResult(request) == null ? toolCall("e", "explode", Map.of()) : complete("ok"));
 
-        assertThatThrownBy(() -> loop.runAndWait(LoopRequest.builder().prompt("go").agentProfile(RECURSIVE)))
-                .hasMessage("database down");
+        AgentLoopResult result = loop.runAndWait(LoopRequest.builder().prompt("go").agentProfile(RECURSIVE));
+
+        assertThat(result.finalResponse().getContent()).isEqualTo("ok");
+        assertThat(lastToolResult(model.requests.get(1))).isEqualTo("Error: explode failed: IllegalStateException: database down");
         assertThat(seen.get()).hasMessage("database down");
     }
 

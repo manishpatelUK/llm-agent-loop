@@ -62,7 +62,7 @@ public final class PresentationTools {
                                 "path", ToolSchemas.string("Workspace path ending in .pptx, e.g. \"pitch/seed-round.pptx\"."),
                                 "slides", ToolSchemas.array("The slides, in order.", slide)))
                         .build(),
-                PresentationTools::create);
+                PresentationTools::create).withRequiresWorkspace();
     }
 
     private static String create(Map<String, Object> args, ToolContext context) {

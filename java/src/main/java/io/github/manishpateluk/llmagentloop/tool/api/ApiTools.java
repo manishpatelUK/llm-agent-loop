@@ -77,12 +77,13 @@ public final class ApiTools {
         }
 
         HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
+        String description = "Call an HTTP API through a pre-configured connection; authentication is "
+                + "handled for you. Paths are relative to the connection's base URL. Use 'select' to "
+                + "return just part of a large JSON response. Connections:" + roster;
         return new RegisteredTool(
                 ToolDefinition.builder()
                         .name(REQUEST)
-                        .description("Call an HTTP API through a pre-configured connection; authentication is "
-                                + "handled for you. Paths are relative to the connection's base URL. Use 'select' to "
-                                + "return just part of a large JSON response. Connections:" + roster)
+                        .description(description)
                         .parameters(ToolSchemas.object(List.of("connection", "method", "path"),
                                 "connection", ToolSchemas.stringEnum("Which API.", List.copyOf(byName.keySet())),
                                 "method", ToolSchemas.stringEnum("HTTP method.", List.copyOf(methods)),
@@ -95,7 +96,9 @@ public final class ApiTools {
                                 "select", ToolSchemas.string("Optional JSON Pointer into the response, e.g. \"/data/0/id\"."),
                                 "save_as", ToolSchemas.string("Optional workspace path to save the raw response body to.")))
                         .build(),
-                (args, context) -> call(client, byName, args, context)).withUntrustedOutput();
+                (args, context) -> call(client, byName, args, context))
+                .withUntrustedOutput()
+                .withWorkspaceParameters(List.of("save_as"), description);
     }
 
     private static String call(HttpClient client, Map<String, ApiConnection> byName, Map<String, Object> args, ToolContext context) {
@@ -249,8 +252,11 @@ public final class ApiTools {
 
         boolean json = mediaType.contains("json");
         if (!json && !mediaType.isEmpty() && !MediaTypes.isText(mediaType)) {
-            return out.append("(").append(bytes.length).append(" bytes of ").append(mediaType)
-                    .append("; use save_as to keep it in the workspace)").toString();
+            out.append("(").append(bytes.length).append(" bytes of ").append(mediaType);
+            if (context.workspace().isConfigured()) {
+                out.append("; use save_as to keep it in the workspace");
+            }
+            return out.append(")").toString();
         }
         String text = new String(bytes, charset(contentType));
         String select = ToolArguments.optionalString(args, "select");

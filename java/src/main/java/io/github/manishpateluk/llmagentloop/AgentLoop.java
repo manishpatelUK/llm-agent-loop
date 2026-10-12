@@ -123,6 +123,9 @@ public final class AgentLoop {
     /** How many memories the loop recalls into each step's context, unprompted. */
     private static final int AUTO_RECALL_LIMIT = 5;
 
+    /** How much of a failed tool's exception message the model is shown. */
+    private static final int MAX_FAILURE_MESSAGE_CHARS = 1_000;
+
     /** The default for {@link Builder#toolTimeout}. */
     public static final Duration DEFAULT_TOOL_TIMEOUT = Duration.ofMinutes(5);
 
@@ -841,7 +844,7 @@ public final class AgentLoop {
             boolean streaming = userFacing && answerStream != null;
 
             while (true) {
-                List<ToolDefinition> availableTools = new ArrayList<>(tools.definitions());
+                List<ToolDefinition> availableTools = offeredTools();
                 if (!streaming) {
                     availableTools.add(AgentLoopSchemas.REPORT_COMPLETE);
                 }
@@ -913,6 +916,16 @@ public final class AgentLoop {
                 history.add(Message.assistant("Completed: " + goal + "\n\n" + answer));
                 return new StepOutcome(answer, response);
             }
+        }
+
+        /** The registered tools as the model sees them: without a workspace, tools and parameters that need one are left out. */
+        private List<ToolDefinition> offeredTools() {
+            boolean hasWorkspace = settings.workspace() != Workspace.NONE;
+            List<ToolDefinition> offered = new ArrayList<>();
+            for (RegisteredTool tool : tools.all()) {
+                tool.definitionFor(hasWorkspace).ifPresent(offered::add);
+            }
+            return offered;
         }
 
         /** A request carrying everything every call needs: the conversation so far, attachment context, and what the model can see. */
@@ -1049,7 +1062,31 @@ public final class AgentLoop {
                 emit(thread, MessageType.WARNING, "Tool " + call.getName() + " reported: " + e.getMessage());
                 loopAuthoredResult = true;
                 return "Error: " + e.getMessage();
+            } catch (BudgetExceeded | Cancelled control) {
+                throw control;
+            } catch (RuntimeException e) {
+                // Anything else the handler threw: the model hears about it and the run carries on.
+                if (cancelled || interruptedBy(e)) {
+                    throw new Cancelled();
+                }
+                for (ToolInterceptor interceptor : settings.interceptors()) {
+                    interceptor.failed(call, e, context);
+                }
+                String failure = call.getName() + " failed: " + describeFailure(e);
+                emit(thread, MessageType.WARNING, "Tool " + failure);
+                loopAuthoredResult = true;
+                return "Error: " + failure;
             }
+        }
+
+        /** {@code "<exception class>: <message>"} for the model — never a stack trace, and the message capped. */
+        private static String describeFailure(RuntimeException e) {
+            String type = e.getClass().getSimpleName().isEmpty() ? e.getClass().getName() : e.getClass().getSimpleName();
+            String message = e.getMessage() == null ? "" : e.getMessage().strip();
+            if (message.length() > MAX_FAILURE_MESSAGE_CHARS) {
+                message = message.substring(0, MAX_FAILURE_MESSAGE_CHARS) + "...";
+            }
+            return message.isEmpty() ? type : type + ": " + message;
         }
 
         /**

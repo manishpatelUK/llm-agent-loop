@@ -28,7 +28,8 @@ import java.util.Objects;
 
 /**
  * Built-in web tools: {@code web_fetch} (read a public page as text, or save a file into the
- * workspace) and {@code web_search} (via a {@link SearchProvider}).
+ * workspace — its {@code save_as} is only offered when the loop has one) and {@code web_search}
+ * (via a {@link SearchProvider}).
  *
  * <pre>{@code
  * registry.register(WebTools.fetch())
@@ -62,13 +63,13 @@ public final class WebTools {
                 .connectTimeout(options.timeout())
                 .followRedirects(HttpClient.Redirect.NEVER) // followed by hand, re-checking every hop
                 .build();
+        String description = "Fetch a public web page and read it as text (HTML is converted to readable "
+                + "Markdown with links). Long pages come back in pieces: use offset to continue.";
         return new RegisteredTool(
                 ToolDefinition.builder()
                         .name(FETCH)
-                        .description("Fetch a public web page and read it as text (HTML is converted to readable "
-                                + "Markdown with links). Long pages come back in pieces: use offset to continue. "
-                                + "To keep a file — a PDF, CSV, image or the page itself — give save_as to store it "
-                                + "in the workspace.")
+                        .description(description + " To keep a file — a PDF, CSV, image or the page itself — give "
+                                + "save_as to store it in the workspace.")
                         .parameters(ToolSchemas.object(List.of("url"),
                                 "url", ToolSchemas.string("The http(s) URL."),
                                 "offset", ToolSchemas.integer("Character to start from. Defaults to 0."),
@@ -76,7 +77,9 @@ public final class WebTools {
                                         + ". Defaults to " + DEFAULT_READ_CHARS + "."),
                                 "save_as", ToolSchemas.string("Optional workspace path to save the downloaded file to, unconverted.")))
                         .build(),
-                (args, context) -> fetch(client, options, args, context)).withUntrustedOutput();
+                (args, context) -> fetch(client, options, args, context))
+                .withUntrustedOutput()
+                .withWorkspaceParameters(List.of("save_as"), description);
     }
 
     public static RegisteredTool search(SearchProvider provider) {
@@ -147,9 +150,12 @@ public final class WebTools {
         } else if (MediaTypes.isText(mediaType)) {
             text = new String(download.body(), download.charset());
         } else {
-            return header.append("This is a ").append(mediaType).append(" file (").append(download.body().length)
-                    .append(" bytes), which can't be shown as text. Fetch it again with save_as to keep it in the workspace.")
-                    .toString();
+            header.append("This is a ").append(mediaType).append(" file (").append(download.body().length)
+                    .append(" bytes), which can't be shown as text.");
+            if (context.workspace().isConfigured()) {
+                header.append(" Fetch it again with save_as to keep it in the workspace.");
+            }
+            return header.toString();
         }
 
         if (offset > text.length()) {

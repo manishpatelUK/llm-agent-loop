@@ -28,8 +28,8 @@ import io.github.manishpateluk.llmrouter.model.ToolCall;
  *
  * <p>Covers registered tools and caller-resolved unregistered ones; not the loop's own control
  * calls ({@code report_complete}, {@code spawn_sub_task}). Runs on the run's thread; blocking (e.g.
- * waiting for an approval) is fine. An exception thrown from an interceptor ends the run like any
- * tool failure — return {@link ToolDecision#refuse} instead to let the model carry on.
+ * waiting for an approval) is fine. An exception thrown from an interceptor ends the run (unlike
+ * one thrown by a tool) — return {@link ToolDecision#refuse} instead to let the model carry on.
  */
 public interface ToolInterceptor {
 
@@ -43,7 +43,12 @@ public interface ToolInterceptor {
         return result;
     }
 
-    /** Called when the tool threw something that will end the run — for logging; the failure still propagates. */
+    /**
+     * Called when the tool threw something unexpected (anything but a {@code ToolInputException}) — for
+     * logging. The model then gets an {@code "Error: <tool> failed: ..."} result, which {@link #after}
+     * also sees, and the run carries on. Also called, before the run ends, when a caller-resolved
+     * unregistered tool or another interceptor threw.
+     */
     default void failed(ToolCall call, Throwable error, ToolContext context) {
     }
 }

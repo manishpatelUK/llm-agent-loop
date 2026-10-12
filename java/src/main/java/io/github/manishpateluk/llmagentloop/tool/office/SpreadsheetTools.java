@@ -137,7 +137,7 @@ public final class SpreadsheetTools {
                                 "path", ToolSchemas.string("Workspace path ending in .xlsx, e.g. \"finance/forecast.xlsx\"."),
                                 "sheets", ToolSchemas.array("The sheets, in tab order.", sheet)))
                         .build(),
-                SpreadsheetTools::create);
+                SpreadsheetTools::create).withRequiresWorkspace();
     }
 
     private static String create(Map<String, Object> args, ToolContext context) {
@@ -210,7 +210,7 @@ public final class SpreadsheetTools {
                                 "max_rows", ToolSchemas.integer("Maximum rows to show, up to " + MAX_READ_ROWS + ". Defaults to " + DEFAULT_READ_ROWS + "."),
                                 "show_formulas", ToolSchemas.bool("Show formulas rather than their values. Defaults to false.")))
                         .build(),
-                SpreadsheetTools::read).withUntrustedOutput();
+                SpreadsheetTools::read).withUntrustedOutput().withRequiresWorkspace();
     }
 
     private static String read(Map<String, Object> args, ToolContext context) {
@@ -300,7 +300,7 @@ public final class SpreadsheetTools {
                                         ToolSchemas.stringArray("One row's cell values.")),
                                 "charts", ToolSchemas.array("Charts to add to the sheet.", CHART_SCHEMA)))
                         .build(),
-                SpreadsheetTools::update);
+                SpreadsheetTools::update).withRequiresWorkspace();
     }
 
     private static String update(Map<String, Object> args, ToolContext context) {

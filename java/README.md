@@ -342,7 +342,9 @@ tools.register(crmLookupDefinition, (arguments, context) ->
 
 `ToolContext` carries the run's `Scope`, execution id, thread, and its `memory()`/`workspace()` — already bound to that scope, so a tool can't reach another user's data whatever the model asks for.
 
-Throw `ToolInputException` for a problem the model can fix (a bad argument, a missing record): its message goes back to the model as `"Error: ..."` and the run carries on, so the model can try again. Any other exception ends the run via `onError`.
+Throw `ToolInputException` for a problem the model can fix (a bad argument, a missing record): its message goes back to the model as `"Error: ..."` and the run carries on, so the model can try again. Any other exception from a handler doesn't end the run either, so the work done so far isn't lost: the model gets `"Error: <tool> failed: <exception class>: <message>"` (never a stack trace), the run emits a `WARNING` message and records the call as a step, and interceptors' `failed(...)` sees the exception. Cancellation, cost and time limits still stop the run as usual, and an exception thrown by an interceptor still ends it.
+
+**Tools that need a workspace.** Mark a tool that only works on workspace files with `.withRequiresWorkspace()`, and optional parameters that need one (a `save_as` path, say) with `.withWorkspaceParameters(List.of("save_as"), descriptionWithoutThem)`. When the loop has no workspace (`Workspace.NONE`, the default), the model isn't offered the first kind, and sees the second without those parameters and with the alternative description. The built-in workspace, data, document, spreadsheet, presentation and knowledge tools require a workspace; `web_fetch`'s and `api_request`'s `save_as` and the email tools' `attachments` are workspace parameters. A tool that reaches `Workspace.NONE` anyway gets a `WorkspaceException`, which the built-ins report back to the model as a fixable error. Inside a handler, `context.workspace().isConfigured()` says whether there's a real workspace.
 
 If the model calls a tool that isn't registered, it's handed to `LoopRequest.onUnregisteredTool` to resolve:
 
@@ -382,7 +384,7 @@ AgentLoop.builder().toolInterceptor(new ToolInterceptor() {
 
 - **Order.** Interceptors run in the order added: `before` in order, `after` in reverse.
 - **Coverage.** Registered tools and caller-resolved unregistered tools. Not the loop's own `report_complete` and `spawn_sub_task`.
-- **Failures.** `failed(...)` is called when a tool throws something that ends the run.
+- **Failures.** `failed(...)` is called when a tool throws something other than `ToolInputException`. The model then gets an `"Error: <tool> failed: ..."` result (which `after(...)` also sees) and the run carries on. An exception thrown by an interceptor itself ends the run; return `ToolDecision.refuse(...)` to block a call instead.
 - **Delegated agents.** Loops made with `withTools(...)`, and so every agent on an `AgentRuntime`, keep the base loop's interceptors.
 
 ### Tool timeouts
@@ -465,7 +467,7 @@ loop.run(LoopRequest.builder()
 ```
 
 - **Memory** is long-term facts. The model manages it explicitly through the `memory_*` tools, and the loop also searches it with each step's goal and adds the best matches to that step's context.
-- **Workspace** is files — drafts, reports, spreadsheets, text or binary. `result.changedFiles()` tells you what a run produced.
+- **Workspace** is files — drafts, reports, spreadsheets, text or binary. `result.changedFiles()` tells you what a run produced. Without one, tools and parameters that need a workspace aren't offered to the model (see "Tools that need a workspace").
 - **Sharing level.** Both are shared at `ScopeLevel.USER` by default: across all of one user's sessions, never between users. Change that with `.memoryLevel(...)`/`.workspaceLevel(...)` — `SESSION` for per-conversation data, or `TENANT` to share across a tenant's users (deliberately: anything one user's agent saves, every other user's agent can then read).
 - **No scope** gives a run a private, throwaway scope: nothing leaks between callers who forget to pass one, but nothing persists between runs either.
 
@@ -563,7 +565,7 @@ Everything that stops a run short of a normal completion goes to `onError`, not 
 
 - `UnregisteredToolException` — the model called a tool that isn't registered, and `onUnregisteredTool` didn't resolve it.
 - `AgentLoopStepLimitExceededException` — the run exceeded `AgentProfile.maxSteps()`.
-- Any exception a tool handler throws, other than `ToolInputException` (which goes back to the model instead).
+- Any exception a `ToolInterceptor` throws, or that `onUnregisteredTool` throws. (Exceptions from tool handlers don't end the run: they go back to the model as `"Error: ..."` results.)
 - Anything `llm-router` itself throws (e.g. `RouterExhaustedException` if every candidate provider/model fails — including when none of them can call tools, since every call that offers tools requires a tool-capable model).
 
 Cost and time bounds (`LoopRequest.maxCostUsdCents`/`maxDuration`) are the exception — those stop the run gracefully via `onResult`, not `onError`, as described above.
@@ -621,7 +623,7 @@ registry.register(WebTools.fetch())
         .register(WebTools.search(new BraveSearch(scope -> keys.braveFor(scope.tenantId()))));  // or TavilySearch
 ```
 
-`web_fetch` reads public pages as Markdown-ish text, using jsoup: headings, lists, links, tables. Long pages come back in pieces, and `save_as` downloads a file (a PDF, a CSV) into the workspace. It never sends credentials, and it refuses non-http(s) URLs and private, loopback and link-local addresses (including cloud metadata endpoints such as `169.254.169.254`). Redirects are followed by hand, and every hop is checked again. `WebFetchOptions` adds domain allow and block lists, size, timeout and redirect limits, and, for intranet deployments only, `withAllowPrivateNetworks(true)`. One limit to know about: the DNS check can be defeated by DNS rebinding, so where that matters, also block private ranges at an egress proxy or firewall.
+`web_fetch` reads public pages as Markdown-ish text, using jsoup: headings, lists, links, tables. Long pages come back in pieces, and `save_as` downloads a file (a PDF, a CSV) into the workspace (offered only when the loop has a workspace). It never sends credentials, and it refuses non-http(s) URLs and private, loopback and link-local addresses (including cloud metadata endpoints such as `169.254.169.254`). Redirects are followed by hand, and every hop is checked again. `WebFetchOptions` adds domain allow and block lists, size, timeout and redirect limits, and, for intranet deployments only, `withAllowPrivateNetworks(true)`. One limit to know about: the DNS check can be defeated by DNS rebinding, so where that matters, also block private ranges at an egress proxy or firewall.
 
 ### Any HTTP API: `api_request`
 
@@ -638,8 +640,8 @@ registry.register(ApiTools.request(List.of(stripe, crm)));
 The model names a connection, a method and a path. **It never sees the credentials, and it can't leave the base URL.** Paths with `..` (including percent-encoded), `//`, backslashes or an embedded query are refused.
 
 - Credentials are resolved per run from the `Scope`, so each tenant can use its own keys.
-- Responses come back as status plus body. `select` (a JSON Pointer) returns just part of a large JSON response, and long bodies are cut off at `maxResponseChars`. `save_as` stores the raw body in the workspace.
-- A 4xx or 5xx is an ordinary result the model can act on. An API that can't be reached at all ends the run.
+- Responses come back as status plus body. `select` (a JSON Pointer) returns just part of a large JSON response, and long bodies are cut off at `maxResponseChars`. `save_as` stores the raw body in the workspace (offered only when the loop has a workspace).
+- A 4xx or 5xx is an ordinary result the model can act on. An API that can't be reached at all is reported to the model as a tool failure.
 - Redirects aren't followed; they come back with their `Location`.
 
 ### Spreadsheets: `spreadsheet_create` / `_read` / `_update`
@@ -708,7 +710,7 @@ registry.registerAll(CalendarTools.all(calendar));
 - **Listing** asks the server to expand recurring events into individual instances, so recurrence rules are handled correctly by the server.
 - **Creating** writes a new `.ics` event.
 - **Not supported:** other people's availability (`busyTimes`), so `calendar_find_free_time` covers the user's own calendar.
-- **Failures.** A server that can't be reached, or that rejects the credentials, ends the run.
+- **Failures.** A server that can't be reached, or that rejects the credentials, is reported to the model as a tool failure (and to interceptors' `failed(...)`).
 
 ### MCP servers
 
@@ -721,7 +723,7 @@ registry.registerAll(github.tools()).registerAll(files.tools());   // close() th
 The client speaks [MCP](https://modelcontextprotocol.io) over stdio or Streamable HTTP, including event-stream responses and session ids. That's how you give an agent tools written in any language, or the many existing MCP servers.
 
 - **Names.** Tools are named `<client>_<tool>` and adjusted to provider naming rules.
-- **Failures.** A tool result flagged `isError` comes back to the model as a fixable error. A server that can't be reached ends the run.
+- **Failures.** A tool result flagged `isError` comes back to the model as a fixable error. A server that can't be reached is reported to the model as a tool failure.
 - **Credentials.** One client holds one set of credentials, so create a client per tenant if tenants need their own.
 - **Scope.** It covers tools only: no resources, prompts or sampling.
 
@@ -974,7 +976,8 @@ Guidelines:
 - **Whose data a call is for comes from `context`, never from arguments.** Credentials, tenant and user all come from `context.scope()`. If the model could name a user in an argument, it could reach another user's data. `context.memory()` and `context.workspace()` are already bound to the run's scope, so tools that read or write the agent's memory or files should use them.
 - **Two kinds of failure:**
   - Throw `ToolInputException` when the model can fix the problem (a bad argument, a record not found, a 404). It becomes an `"Error: ..."` result and the run carries on.
-  - Let other exceptions propagate when the problem is real infrastructure failure. They end the run via `onError`. The loop never retries a tool itself.
+  - Let other exceptions propagate when the problem is real infrastructure failure. The model is told `"Error: <tool> failed: <exception class>: <message>"` and can work around it, and interceptors' `failed(...)` sees the exception for your logs, so keep secrets out of exception messages. The loop never retries a tool itself.
+- **Declare workspace needs.** If the tool only works on workspace files, register it `.withRequiresWorkspace()`; if just some optional parameters do, use `.withWorkspaceParameters(...)`. Without a workspace the model then isn't offered them.
 - **Keep results small and readable.** Everything returned goes into the model's context. Cap result sizes and paginate (see `workspace_read`'s `offset`), and prefer compact JSON or plain text over raw API dumps.
 - **Blocking is fine.** Handlers run on the run's virtual thread, so a tool can call a slow API, or wait for a human.
 
@@ -1002,7 +1005,7 @@ Agent agent = Agent.builder(definition).skills(payroll, Skills.spreadsheets()).b
 
 ### Other extension points
 
-- **`SearchProvider`.** Any search backend for `web_search`. Return `SearchProvider.Result(title, url, snippet)`s. Throw `ToolInputException` for things like rate limiting, and any other exception for misconfiguration.
+- **`SearchProvider`.** Any search backend for `web_search`. Return `SearchProvider.Result(title, url, snippet)`s. Throw `ToolInputException` for things like rate limiting, and any other exception for misconfiguration (it's reported to the model as a tool failure, and to interceptors' `failed(...)`).
 - **`ApiAuth`.** Any authentication scheme for `api_request`: return the headers and/or query parameters to add for a given `Scope`.
 - **`HumanTools.Handler`.** How `ask_human` reaches your user, and how long it waits.
 - **`AgentDelegate`.** Delegate to anything: a remote agent service, a queue a human team works from.

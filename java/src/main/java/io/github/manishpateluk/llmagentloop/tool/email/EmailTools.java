@@ -46,20 +46,23 @@ public final class EmailTools {
         return List.of(send(service), draft(service), search(service), read(service));
     }
 
+    private static final String SEND_DESCRIPTION = "Send an email from the user's account. Use it only when the user "
+            + "has asked for the email to be sent; prefer " + DRAFT + " when they'll want to review it first.";
+    private static final String DRAFT_DESCRIPTION = "Save an email as a draft in the user's account for them to review and send.";
+
     public static RegisteredTool send(EmailService service) {
         Objects.requireNonNull(service, "service");
         return new RegisteredTool(
                 ToolDefinition.builder()
                         .name(SEND)
-                        .description("Send an email from the user's account. Use it only when the user has asked for the "
-                                + "email to be sent; prefer " + DRAFT + " when they'll want to review it first.")
+                        .description(SEND_DESCRIPTION)
                         .parameters(composeSchema())
                         .build(),
                 (args, context) -> {
                     Email email = compose(args, context);
                     String id = unsupportedAsError(() -> service.send(email, context), "sending email");
                     return "Sent to " + String.join(", ", email.to()) + (id == null || id.isBlank() ? "." : " (message id " + id + ").");
-                });
+                }).withWorkspaceParameters(List.of("attachments"), SEND_DESCRIPTION);
     }
 
     public static RegisteredTool draft(EmailService service) {
@@ -67,14 +70,14 @@ public final class EmailTools {
         return new RegisteredTool(
                 ToolDefinition.builder()
                         .name(DRAFT)
-                        .description("Save an email as a draft in the user's account for them to review and send.")
+                        .description(DRAFT_DESCRIPTION)
                         .parameters(composeSchema())
                         .build(),
                 (args, context) -> {
                     Email email = compose(args, context);
                     String id = unsupportedAsError(() -> service.saveDraft(email, context), "saving drafts");
                     return "Saved a draft to " + String.join(", ", email.to()) + (id == null || id.isBlank() ? "." : " (draft id " + id + ").");
-                });
+                }).withWorkspaceParameters(List.of("attachments"), DRAFT_DESCRIPTION);
     }
 
     public static RegisteredTool search(EmailService service) {
