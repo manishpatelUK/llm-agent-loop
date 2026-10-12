@@ -181,12 +181,33 @@ loop.run(LoopRequest.builder()
     .onMessage(message -> { /* ... */ })   // optional, defaults to a no-op — see "Status updates" below
     .maxCostUsdCents(500)                  // optional, approximate — see below
     .maxDuration(Duration.ofMinutes(2))    // optional, approximate — see below
+    .windDown(WindDown.DEFAULT.withWarnAtStepsLeft(3)) // optional — how the run winds down at its limits
     .scope(Scope.of(tenantId, userId, sessionId)) // optional — whose memory/files; see "Memory, workspace and scope"
     .requireAttachmentSupport(true)        // optional — fail rather than send attachments to a model that would drop them
     .build());
 ```
 
-`maxCostUsdCents` and `maxDuration` are approximate, best-effort bounds: checked after each step completes rather than mid-step, so the run may go slightly over before it notices. Crossing either stops the run **gracefully** — it still returns an answer via `onResult`, not `onError` — with `AgentLoopResult.execution().terminationReason()` telling you which bound (if either) was hit: `COMPLETED`, `COST_LIMIT_REACHED`, `TIME_LIMIT_REACHED`, or `CANCELLED`.
+`maxCostUsdCents` and `maxDuration` are approximate, best-effort bounds: checked between model calls rather than mid-call, so the run may go slightly over before it notices.
+
+#### Winding down at a limit
+
+A run has up to three limits: `AgentProfile.maxSteps` (always; default 25), and `maxCostUsdCents` and `maxDuration` when set. It treats all three the same way, so it ends with an answer rather than a half-finished thought:
+
+- **Warning.** When the run gets close to a limit, the next working model call gets a short system note. The note says which limit, how much is left, and that the model must now stop gathering and give its final answer from what it has. Each limit is warned about once, not on every step.
+- **Wrap-up.** When a limit is reached, tool calls in the last response aren't run. Instead, the run makes one final model call with tools off, asking for the best complete answer from everything gathered so far. The work done so far goes along as plain text. This call doesn't count toward `maxSteps`, but it is metered (`UsagePurpose.WRAP_UP`), and it has its own short time allowance, so it runs even after a time limit. Its answer becomes `finalResponse`. It also gets an `answerSchema` structured answer, like any finished answer.
+- **Ending.** `execution().terminationReason()` is `STEP_LIMIT_REACHED`, `COST_LIMIT_REACHED` or `TIME_LIMIT_REACHED`, so you can tell a wrapped-up answer from a normal `COMPLETED` one. The execution's last step is a `WRAP_UP`. If the wrap-up call fails or runs over its allowance, the run still ends with the same reason, but with its last response instead and a `TRUNCATED` step. Either way the answer arrives via `onResult`, not `onError`. A run that gives its final answer on its last step is simply `COMPLETED`.
+- **Nesting.** Plan steps, sub-tasks and delegated agents (`delegate_to_agent`, or any `runAndWait` from inside a tool) share the run's limits. Their model calls count toward the run's steps, cost and time. When a run's limit is reached inside a delegated agent, that agent stops and the run winds down once, at the top level. A delegated agent's own `maxSteps` still applies to it alone: reaching it, the delegate wraps up and its answer comes back to the delegating run marked as possibly incomplete.
+
+`WindDown` sets when the model is warned and how long the wrap-up may take. Pass it with `LoopRequest.windDown(...)`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `warnAtStepsLeft` | 2 | Warn when this many steps are left, counting the call about to be made; `0` turns step warnings off. |
+| `warnAtCostFraction` | 0.8 | Warn once this fraction of `maxCostUsdCents` is spent. |
+| `warnAtTimeFraction` | 0.8 | Warn once this fraction of `maxDuration` has passed. |
+| `wrapUpTimeout` | 60 s | How long the final tools-off call may take. |
+
+The result's `terminationReason()` is one of `COMPLETED`, `STEP_LIMIT_REACHED`, `COST_LIMIT_REACHED`, `TIME_LIMIT_REACHED` or `CANCELLED`.
 
 ### Chat sessions: history, attachments, cancelling, model choice
 
@@ -249,7 +270,7 @@ If you keep chat history yourself, pass `.history(List.of(Message.user(...), Mes
 ```
 
 - **How it works.** Once the run finishes, one extra model call converts the text answer to JSON matching the schema. The text answer is still produced and streamed as usual.
-- **Limits.** The extra call doesn't count toward `maxSteps`, but it is metered. The schema's top level must be an `object`.
+- **Limits.** The extra call doesn't count toward `maxSteps`, but it is metered. It also runs for an answer wrapped up at a limit. The schema's top level must be an `object`.
 - **Failures.** If the conversion fails, `structuredAnswer()` is `null` and a `WARNING` says so; the finished run isn't failed. Runs that stop early (limits, cancellation) have no structured answer.
 
 **Usage metering.** Every model call is metered: working steps, planning, answer formatting, history compression's summaries, and conversation compaction. Metering is **on by default**.
@@ -392,7 +413,7 @@ AgentLoop.builder().toolInterceptor(new ToolInterceptor() {
 Each tool call has a time limit. The default is 5 minutes; change it with `AgentLoop.builder().toolTimeout(...)`, or per tool with `registeredTool.withTimeout(...)`.
 
 - **What happens on timeout.** The call is interrupted and the model is told it timed out (`"Error: ... didn't finish within ..."`), so it can try something else.
-- **Run limit.** A run's `maxDuration` also cuts a long tool call short, and the run then stops with `TIME_LIMIT_REACHED`.
+- **Run limit.** A run's `maxDuration` also cuts a long tool call short, and the run then winds down with `TIME_LIMIT_REACHED` (see "Winding down at a limit").
 - **Tools that wait.** `ask_human` and `delegate_to_agent` legitimately wait, so they come with long timeouts of their own: 24 hours and 1 hour.
 - **Limitation.** A tool that ignores interrupts can't be forcibly stopped.
 
@@ -564,11 +585,10 @@ assertThat(run.messages(MessageType.TOOL_CALL)).containsExactly("Calling tool: g
 Everything that stops a run short of a normal completion goes to `onError`, not thrown from `run(...)` (which itself only validates its input synchronously before dispatching the run):
 
 - `UnregisteredToolException` — the model called a tool that isn't registered, and `onUnregisteredTool` didn't resolve it.
-- `AgentLoopStepLimitExceededException` — the run exceeded `AgentProfile.maxSteps()`.
 - Any exception a `ToolInterceptor` throws, or that `onUnregisteredTool` throws. (Exceptions from tool handlers don't end the run: they go back to the model as `"Error: ..."` results.)
 - Anything `llm-router` itself throws (e.g. `RouterExhaustedException` if every candidate provider/model fails — including when none of them can call tools, since every call that offers tools requires a tool-capable model).
 
-Cost and time bounds (`LoopRequest.maxCostUsdCents`/`maxDuration`) are the exception — those stop the run gracefully via `onResult`, not `onError`, as described above.
+Reaching a limit (`maxSteps`, `maxCostUsdCents`, `maxDuration`) isn't an error: the run winds down and ends via `onResult`, as described in "Winding down at a limit".
 
 ## Built-in tools
 
@@ -611,7 +631,7 @@ With `AgentRuntime`, use `Agent.builder(...).delegateTo(otherAgent)`. At a lower
 
 - The delegated run uses the **same scope**: same user, memory and workspace.
 - Its status updates are forwarded, prefixed `[legal]`.
-- Its step and cost limits are its own.
+- It shares the delegating run's limits: its model calls count toward that run's steps, cost and time, and if one of those is reached while it works, it stops and the delegating run winds down (see "Winding down at a limit"). Its own profile's `maxSteps` also applies: reaching that, it wraps up with its best answer, which comes back marked as possibly incomplete.
 - It inherits the delegating run's `operatingContext` unless the delegate opts out (`runtime.delegate(agent, false)`, or `AgentDelegate.of(..., false)`).
 - Chains are capped at `DelegationTools.MAX_DEPTH` (3), so agents that delegate to each other can't recurse forever.
 - **Many delegates.** The tool's description lists each delegate on one line, as name plus the first line of its description, cut to `DelegationTools.MAX_SUMMARY_CHARS` (160). The `agent` parameter is an enum of the valid names, and an unknown name is a fixable error listing them. Keep descriptions to one informative line: with dozens of delegates, this list is most of the tool's size. With about 40 delegates it comes to 2–3k characters. Some providers may limit how long a tool description can be; this hasn't been checked against each one (see ROADMAP.md).
@@ -623,7 +643,7 @@ registry.register(WebTools.fetch())
         .register(WebTools.search(new BraveSearch(scope -> keys.braveFor(scope.tenantId()))));  // or TavilySearch
 ```
 
-`web_fetch` reads public pages as Markdown-ish text, using jsoup: headings, lists, links, tables. Long pages come back in pieces, and `save_as` downloads a file (a PDF, a CSV) into the workspace (offered only when the loop has a workspace). It never sends credentials, and it refuses non-http(s) URLs and private, loopback and link-local addresses (including cloud metadata endpoints such as `169.254.169.254`). Redirects are followed by hand, and every hop is checked again. `WebFetchOptions` adds domain allow and block lists, size, timeout and redirect limits, and, for intranet deployments only, `withAllowPrivateNetworks(true)`. One limit to know about: the DNS check can be defeated by DNS rebinding, so where that matters, also block private ranges at an egress proxy or firewall.
+`web_fetch` reads public pages as Markdown-ish text, using jsoup: headings, lists, links, tables. Long pages come back in pieces, and `save_as` downloads a file (a PDF, a CSV) into the workspace (offered only when the loop has a workspace). It never sends credentials, and it refuses non-http(s) URLs and private, loopback and link-local addresses (including cloud metadata endpoints such as `169.254.169.254`). Redirects are followed by hand, and every hop is checked again. `WebFetchOptions` adds domain allow and block lists, size, timeout and redirect limits, how much page text comes back per call (`withReadChars(defaultReadChars, maxReadChars)`: by default 20,000 characters unless the model asks for more, up to 100,000; lower them to keep pages small in context, and the model pages on with `offset`), and, for intranet deployments only, `withAllowPrivateNetworks(true)`. One limit to know about: the DNS check can be defeated by DNS rebinding, so where that matters, also block private ranges at an egress proxy or firewall.
 
 ### Any HTTP API: `api_request`
 

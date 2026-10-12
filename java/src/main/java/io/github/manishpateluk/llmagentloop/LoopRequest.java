@@ -64,16 +64,20 @@ import java.util.function.Consumer;
  *                        in real time — see {@link AnswerStream}. Providers without native streaming
  *                        deliver each step's text in one piece.
  * @param maxCostUsdCents optional cost bound, in USD cents, on top of {@link AgentProfile#maxSteps()}.
- *                        {@code null} (the default) means unbounded — current no-cost-tracking
- *                        behavior. When set, cost is checked after each step completes (not mid-step,
- *                        so the bound is approximate, not exact); once accumulated cost meets or
- *                        exceeds it, the run stops and returns whatever answer it has so far,
- *                        rather than continuing to the next step. Accumulated cost is everything the run
- *                        has been metered for so far (steps, planning, compression, embeddings), summed
- *                        in micro-dollars so that many sub-cent calls still add up.
- * @param maxDuration     optional wall-clock bound on the whole run, checked after each step;
- *                        tool calls are also cut short when they'd run past it. {@code null} (the
+ *                        {@code null} (the default) means unbounded. Checked between model calls (not
+ *                        mid-call, so the bound is approximate, not exact); once accumulated cost meets
+ *                        or exceeds it, the run winds down — see {@link #windDown()} — and ends with
+ *                        {@code COST_LIMIT_REACHED}. Accumulated cost is everything the run has been
+ *                        metered for so far (steps, planning, compression, embeddings, and the model
+ *                        calls of agents it delegates to), summed in micro-dollars so that many
+ *                        sub-cent calls still add up.
+ * @param maxDuration     optional wall-clock bound on the whole run, checked between model calls;
+ *                        tool calls are also cut short when they'd run past it. Reaching it winds the
+ *                        run down and ends it with {@code TIME_LIMIT_REACHED}. {@code null} (the
  *                        default) means unbounded.
+ * @param windDown        optional; how the run winds down near and at its limits (step, cost and
+ *                        time): when the model is warned, and how long the final tools-off answer
+ *                        may take. Defaults to {@link WindDown#DEFAULT}.
  * @param onUnregisteredTool optional; resolves tool calls the model makes that aren't registered
  *                        on the {@link AgentLoop} — see {@link UnregisteredToolHandler}. Defaults to
  *                        {@link UnregisteredToolHandler#NONE}, which ends the run with an
@@ -101,6 +105,7 @@ public record LoopRequest(
         AnswerStream answerStream,
         Integer maxCostUsdCents,
         Duration maxDuration,
+        WindDown windDown,
         UnregisteredToolHandler onUnregisteredTool,
         Scope scope) {
 
@@ -132,5 +137,6 @@ public record LoopRequest(
         if (maxDuration != null && (maxDuration.isZero() || maxDuration.isNegative())) {
             throw new IllegalArgumentException("maxDuration must be positive when supplied, was " + maxDuration);
         }
+        windDown = windDown == null ? WindDown.DEFAULT : windDown;
     }
 }

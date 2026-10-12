@@ -46,8 +46,6 @@ public final class WebTools {
     public static final String FETCH = "web_fetch";
     public static final String SEARCH = "web_search";
 
-    static final int DEFAULT_READ_CHARS = 20_000;
-    static final int MAX_READ_CHARS = 100_000;
     private static final String USER_AGENT = "llm-agent-loop/1.0 (+https://github.com/manishpatelUK/llm-agent-loop)";
 
     private WebTools() {
@@ -73,8 +71,8 @@ public final class WebTools {
                         .parameters(ToolSchemas.object(List.of("url"),
                                 "url", ToolSchemas.string("The http(s) URL."),
                                 "offset", ToolSchemas.integer("Character to start from. Defaults to 0."),
-                                "max_chars", ToolSchemas.integer("Maximum characters to return, up to " + MAX_READ_CHARS
-                                        + ". Defaults to " + DEFAULT_READ_CHARS + "."),
+                                "max_chars", ToolSchemas.integer("Maximum characters to return, up to " + options.maxReadChars()
+                                        + ". Defaults to " + options.defaultReadChars() + "."),
                                 "save_as", ToolSchemas.string("Optional workspace path to save the downloaded file to, unconverted.")))
                         .build(),
                 (args, context) -> fetch(client, options, args, context))
@@ -116,7 +114,7 @@ public final class WebTools {
     private static String fetch(HttpClient client, WebFetchOptions options, Map<String, Object> args, ToolContext context) {
         String urlText = ToolArguments.requireString(args, "url");
         int offset = ToolArguments.optionalInt(args, "offset", 0, 0, Integer.MAX_VALUE);
-        int maxChars = ToolArguments.optionalInt(args, "max_chars", DEFAULT_READ_CHARS, 1, MAX_READ_CHARS);
+        int maxChars = ToolArguments.optionalInt(args, "max_chars", options.defaultReadChars(), 1, options.maxReadChars());
         String saveAs = ToolArguments.optionalString(args, "save_as");
 
         Download download = download(client, options, parse(urlText.strip()));

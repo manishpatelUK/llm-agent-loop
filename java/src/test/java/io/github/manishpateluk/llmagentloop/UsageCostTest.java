@@ -142,11 +142,13 @@ class UsageCostTest {
         assertThat(run.error()).isNull();
         assertThat(run.result().execution().terminationReason()).isEqualTo(TerminationReason.COST_LIMIT_REACHED);
         // 0.3 cents a call: the 4th call takes the run past 1 cent, though each call alone rounds to 0 cents.
-        assertThat(model.requests()).hasSize(4);
+        // Then one metered wrap-up call.
+        assertThat(model.requests()).hasSize(5);
+        assertThat(model.requests().getLast().getTools()).isEmpty();
         UsageTotals usage = run.result().usage();
-        assertThat(usage.costUsdMicros()).isEqualTo(12_000);
+        assertThat(usage.costUsdMicros()).isEqualTo(15_000);
         assertThat(usage.costUsdCents()).isZero();
-        assertThat(usage.costUsdCentsRounded()).isEqualTo(1);
+        assertThat(usage.costUsdCentsRounded()).isEqualTo(2);
     }
 
     @Test
@@ -166,8 +168,35 @@ class UsageCostTest {
 
         assertThat(run.error()).isNull();
         assertThat(run.result().execution().terminationReason()).isEqualTo(TerminationReason.COST_LIMIT_REACHED);
-        assertThat(model.requests()).hasSize(4);
-        assertThat(MockModel.lastToolResult(model.requests().getLast()))
+        assertThat(model.requests()).hasSize(5);
+        assertThat(MockModel.lastToolResult(model.requests().get(3)))
                 .isEqualTo("Error: flaky failed: IllegalStateException: upstream unavailable");
+    }
+
+    @Test
+    void nearTheCostLimitTheModelIsWarnedOnceThenWrapsUp() {
+        AtomicInteger calls = new AtomicInteger();
+        MockModel model = new MockModel().usage(3_000, 0).otherwise(request -> request.getTools().isEmpty()
+                ? Response.builder().content("Best answer within budget.").build()
+                : Response.builder().content("")
+                        .toolCalls(List.of(ToolCall.builder().id("n" + calls.incrementAndGet()).name("noop").arguments(Map.of()).build()))
+                        .build());
+        List<UsageRecord> records = new CopyOnWriteArrayList<>();
+        AgentLoop loop = model.loopBuilder().usageMeter(records::add).tools(new ToolRegistry().register(ToolDefinition.builder().name("noop")
+                .description("Does nothing").parameters(Map.of("type", "object")).build(), args -> "ok")).build();
+
+        TestRun run = TestRuns.run(loop, LoopRequest.builder().prompt("Keep going").agentProfile(MockModel.STEP_BY_STEP)
+                .routerConfig(RouterConfig.builder().route(List.of(RouteEntry.of(Provider.ANTHROPIC, CHAT))).build())
+                .maxCostUsdCents(1));
+
+        // 0.3 cents a call: after 3 calls (0.9 cents) the 80% mark is passed, so the 4th call is warned;
+        // it takes the run past 1 cent, and the 5th call is the tools-off wrap-up.
+        assertThat(model.requests()).extracting(WindDownTest::limitWarnings).containsExactly(0L, 0L, 0L, 1L, 0L);
+        assertThat(model.requests().get(3).getHistory().getLast().getContent())
+                .contains("about $0.00 of the $0.01 cost limit left");
+        assertThat(model.requests().getLast().getTools()).isEmpty();
+        assertThat(run.result().execution().terminationReason()).isEqualTo(TerminationReason.COST_LIMIT_REACHED);
+        assertThat(run.result().finalResponse().getContent()).isEqualTo("Best answer within budget.");
+        assertThat(records.stream().filter(r -> r.purpose() == UsagePurpose.WRAP_UP)).hasSize(1);
     }
 }

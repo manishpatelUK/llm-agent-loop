@@ -12,6 +12,9 @@ public enum UsagePurpose {
     /** Generating an explicit plan. */
     PLAN,
 
+    /** The final, tools-off call when a run reaches a limit, asking for the best answer from what it gathered. */
+    WRAP_UP,
+
     /** Turning the final answer into structured data ({@code LoopRequest.answerSchema}). */
     ANSWER_FORMATTING,
 

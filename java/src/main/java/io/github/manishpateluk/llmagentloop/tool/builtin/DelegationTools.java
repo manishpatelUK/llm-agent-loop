@@ -26,7 +26,7 @@ public final class DelegationTools {
     public static final String DELEGATE = "delegate_to_agent";
     public static final int MAX_DEPTH = 3;
 
-    /** {@code delegate_to_agent}'s own tool timeout: the delegated agent has its own step and time limits too. */
+    /** {@code delegate_to_agent}'s own tool timeout; the delegating run's time limit, if any, still cuts it short. */
     public static final Duration TIMEOUT = Duration.ofHours(1);
 
     private static final Pattern NAME = Pattern.compile("^[a-zA-Z0-9_-]{1,64}$");

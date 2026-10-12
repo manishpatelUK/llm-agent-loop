@@ -70,7 +70,8 @@ class ToolTimeoutTest {
                 .maxDuration(Duration.ofMillis(300)));
 
         assertThat(result.execution().terminationReason()).isEqualTo(TerminationReason.TIME_LIMIT_REACHED);
-        assertThat(model.requests).hasSize(1);
+        assertThat(model.requests).hasSize(2); // the working step, then the tools-off wrap-up
+        assertThat(model.requests.get(1).getTools()).isEmpty();
     }
 
     @Test

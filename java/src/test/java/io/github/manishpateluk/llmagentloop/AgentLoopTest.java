@@ -275,12 +275,14 @@ class AgentLoopTest {
     }
 
     @Test
-    void exceedingMaxStepsEndsTheRunWithAnError() throws InterruptedException {
+    void reachingMaxStepsWrapsUpWithAToolsOffAnswer() throws InterruptedException {
         registerModel();
-        AgentLoop loop = newLoop(List.of(), request -> Response.builder()
-                .content("")
-                .toolCalls(List.of(ToolCall.builder().id("1").name("noop").arguments(Map.of()).build()))
-                .build(), registry -> registry.register(
+        AgentLoop loop = newLoop(List.of(), request -> request.getTools().isEmpty()
+                ? Response.builder().content("Best answer from what I found.").build()
+                : Response.builder()
+                        .content("")
+                        .toolCalls(List.of(ToolCall.builder().id("1").name("noop").arguments(Map.of()).build()))
+                        .build(), registry -> registry.register(
                 io.github.manishpateluk.llmrouter.model.ToolDefinition.builder()
                         .name("noop")
                         .description("Does nothing")
@@ -292,12 +294,13 @@ class AgentLoopTest {
                 .prompt("Loop forever")
                 .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).maxSteps(2).build()));
 
-        assertThat(capture.result()).isNull();
-        assertThat(capture.error()).isInstanceOf(AgentLoopStepLimitExceededException.class);
+        assertThat(capture.error()).isNull();
+        assertThat(capture.result().execution().terminationReason()).isEqualTo(TerminationReason.STEP_LIMIT_REACHED);
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("Best answer from what I found.");
     }
 
     @Test
-    void costLimitReachedStopsEarlyAndReturnsAPartialResultRatherThanAnError() throws InterruptedException {
+    void costLimitReachedWrapsUpWithAToolsOffAnswerRatherThanAnError() throws InterruptedException {
         registerModel();
         AtomicInteger calls = new AtomicInteger();
         // LlmRouter recomputes Usage.estimatedCostUsdCents itself from whichever real model it
@@ -306,6 +309,9 @@ class AgentLoopTest {
         // under any plausible real per-token pricing, so the exact model chosen doesn't matter.
         AgentLoop loop = newLoop(List.of(), request -> {
             calls.incrementAndGet();
+            if (request.getTools().isEmpty()) {
+                return Response.builder().content("Here's what I found so far.").build();
+            }
             return Response.builder()
                     .content("still working")
                     .usage(Usage.builder().inputTokens(1_000_000).build())
@@ -327,16 +333,19 @@ class AgentLoopTest {
         assertThat(capture.error()).isNull();
         assertThat(capture.result()).isNotNull();
         assertThat(capture.result().execution().terminationReason()).isEqualTo(TerminationReason.COST_LIMIT_REACHED);
-        assertThat(capture.result().finalResponse().getContent()).isEqualTo("still working");
-        assertThat(calls.get()).isEqualTo(1);
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("Here's what I found so far.");
+        assertThat(calls.get()).isEqualTo(2); // one working step, then the wrap-up
         assertThat(capture.messages()).anyMatch(
-                m -> m.type() == MessageType.WARNING && m.message().startsWith("Stopping early: cost limit"));
+                m -> m.type() == MessageType.WARNING && m.message().startsWith("Reached the cost limit"));
     }
 
     @Test
-    void timeLimitReachedStopsEarlyAndReturnsAPartialResultRatherThanAnError() throws InterruptedException {
+    void timeLimitReachedWrapsUpWithAToolsOffAnswerRatherThanAnError() throws InterruptedException {
         registerModel();
         AgentLoop loop = newLoop(List.of(), request -> {
+            if (request.getTools().isEmpty()) {
+                return Response.builder().content("Here's what I found so far.").build();
+            }
             try {
                 Thread.sleep(20);
             } catch (InterruptedException e) {
@@ -362,8 +371,9 @@ class AgentLoopTest {
         assertThat(capture.error()).isNull();
         assertThat(capture.result()).isNotNull();
         assertThat(capture.result().execution().terminationReason()).isEqualTo(TerminationReason.TIME_LIMIT_REACHED);
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("Here's what I found so far.");
         assertThat(capture.messages()).anyMatch(
-                m -> m.type() == MessageType.WARNING && m.message().startsWith("Stopping early: time limit"));
+                m -> m.type() == MessageType.WARNING && m.message().startsWith("Reached the time limit"));
     }
 
     @Test
@@ -467,6 +477,9 @@ class AgentLoopTest {
                                 : "{\"summary\":\"one step\",\"steps\":[{\"description\":\"step one\"}]}")
                         .build();
             }
+            if (request.getPrompt().startsWith(AgentLoop.WRAP_UP_PREFIX)) {
+                return Response.builder().content("Wrapped up.").build();
+            }
             stepCalls.incrementAndGet();
             return reportComplete("done");
         });
@@ -476,8 +489,8 @@ class AgentLoopTest {
                 .prompt("Plan this")
                 .agentProfile(AgentProfile.builder().planMode(PlanMode.AUTO).maxSteps(2).build()));
 
-        assertThat(capture.result()).isNull();
-        assertThat(capture.error()).isInstanceOf(AgentLoopStepLimitExceededException.class);
+        assertThat(capture.result().execution().terminationReason()).isEqualTo(TerminationReason.STEP_LIMIT_REACHED);
+        assertThat(capture.result().finalResponse().getContent()).isEqualTo("Wrapped up.");
         assertThat(stepCalls.get()).isZero();
     }
 

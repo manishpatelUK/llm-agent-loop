@@ -105,8 +105,8 @@ Implemented so far (Java):
     `Execution`, keyed by a random execution id; branches (sub-tasks, and a `Plan`'s
     parallel-grouped steps) execute sequentially this pass, not concurrently.
   - `maxSteps` on `AgentProfile` (default 25, no way to request unbounded) is the safety net
-    against runaway recursion (`AgentLoopStepLimitExceededException`). Every LLM call the run
-    makes counts as a step — including `AUTO`'s plan-needed check and plan generation.
+    against runaway recursion. Every LLM call the run makes counts as a step — including `AUTO`'s
+    plan-needed check and plan generation.
   - A `Plan`'s steps share one history, seeded with the overall goal and accumulating each
     completed step's answer, so later steps build on earlier ones. A sub-task's result is folded
     back as a tool result correlated (by call id) to the `spawn_sub_task` call that requested it.
@@ -114,13 +114,18 @@ Implemented so far (Java):
     calls, only the control tool is acted on — the others are reported via a `WARNING`
     `AgentMessage`, never dropped silently.
   - `LoopRequest.maxCostUsdCents` and `maxDuration` are optional, approximate per-run bounds —
-    unlike `maxSteps`, they default to unbounded (current no-bound behavior) and, when set, stop
-    the run *gracefully* rather than failing it: checked after each step completes (not mid-step,
-    so the bound is met "at or after", never exact), the run returns whatever answer it has so far
-    via `onResult` — not `onError` — with a `WARNING` `AgentMessage` explaining why, and
-    `Execution.terminationReason()` (`COMPLETED` / `COST_LIMIT_REACHED` / `TIME_LIMIT_REACHED`) on
-    the result records what happened. The check applies globally across the whole run — a bound
-    crossed inside a sub-task or a plan step stops everything, not just that branch.
+    unlike `maxSteps`, they default to unbounded. All three limits wind the run down *gracefully*
+    rather than failing it (`WindDown`, set with `LoopRequest.windDown`): close to a limit (by
+    default 2 steps left, or 80% of the cost or time budget) the next model call gets a one-time
+    note saying which limit, how much is left, and to stop gathering and answer; at the limit, one
+    final tools-off call (not counted as a step, but metered, with its own time allowance) asks for
+    the best complete answer from everything gathered. The run returns that answer via `onResult` —
+    not `onError` — with `Execution.terminationReason()` `STEP_LIMIT_REACHED` /
+    `COST_LIMIT_REACHED` / `TIME_LIMIT_REACHED`, so callers can tell it from a normal `COMPLETED`
+    answer; if the wrap-up call fails, the run ends with the same reason and its last response.
+    Limits are checked between model calls (met "at or after", never exact) and apply across the
+    whole run: plan steps, sub-tasks and delegated agents all count toward them, and reaching one
+    anywhere unwinds to the top level, which winds down once.
   - Attachments are prepared once per run and the same `Attachment`s reused, unchanged, on every
     call the run makes — which, combined with reusing the same `LlmRouter` instance throughout,
     is exactly what `llm-router` 1.0.2+ needs to deduplicate repeat file uploads by content hash

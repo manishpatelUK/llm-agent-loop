@@ -25,6 +25,12 @@ public enum StepAction {
     /** The thread's goal was declared complete. */
     COMPLETE,
 
-    /** The run stopped early — a cost or time bound was reached; see {@link TerminationReason}. */
+    /** A limit was reached and the model gave its final answer from what the run had gathered, with tools off. */
+    WRAP_UP,
+
+    /**
+     * The run stopped early without a final answer — cancelled, or a limit was reached and the
+     * wrap-up call failed; see {@link TerminationReason}.
+     */
     TRUNCATED
 }

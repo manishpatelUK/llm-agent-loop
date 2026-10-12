@@ -9,6 +9,7 @@ import io.github.manishpateluk.llmrouter.model.Attachment;
 import io.github.manishpateluk.llmrouter.model.Message;
 import io.github.manishpateluk.llmrouter.model.Request;
 import io.github.manishpateluk.llmrouter.model.Response;
+import io.github.manishpateluk.llmrouter.model.Role;
 import io.github.manishpateluk.llmrouter.model.ToolCall;
 import io.github.manishpateluk.llmrouter.model.ToolDefinition;
 import io.github.manishpateluk.llmrouter.model.Usage;
@@ -59,7 +60,12 @@ import tools.jackson.databind.json.JsonMapper;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -78,8 +84,8 @@ import java.util.stream.Collectors;
  * The library's main entry point: turns a single {@link LoopRequest} into a completed task by
  * recursively calling an LLM (via the {@link LlmRouter} supplied at construction) — running
  * tools, checking for completion, and possibly branching into sub-tasks — until the goal is
- * satisfied or {@link AgentProfile#maxSteps()} is exceeded; every LLM call the run makes (the
- * {@code AUTO} plan check and plan generation included) counts as a step. {@link #run} is
+ * satisfied or a limit is reached; every LLM call the run makes (the {@code AUTO} plan check and
+ * plan generation included) counts as a step toward {@link AgentProfile#maxSteps()}. {@link #run} is
  * asynchronous and returns a {@link RunHandle} for cancelling; {@link #runAndWait} blocks the
  * calling thread instead.
  *
@@ -91,10 +97,15 @@ import java.util.stream.Collectors;
  * fully-assembled {@link LlmRouter} and want nothing else.
  *
  * <p>{@link LoopRequest#maxCostUsdCents()} and {@link LoopRequest#maxDuration()} are optional,
- * approximate bounds on top of {@link AgentProfile#maxSteps()}: checked after each step completes
- * (not mid-step), so once either is met or exceeded the run stops and returns whatever answer it
- * has so far — via {@link LoopRequest#onResult()}, not {@link LoopRequest#onError()}. Cancelling
- * works the same way. {@code Execution.terminationReason()} on the result says which happened.
+ * approximate bounds on top of {@link AgentProfile#maxSteps()}, checked between model calls. A run
+ * winds down at all three the same way (see {@link WindDown}): close to a limit the model is told to
+ * stop gathering and answer; at the limit, one last tools-off call asks for the best complete answer
+ * from what the run gathered, and the run ends — via {@link LoopRequest#onResult()}, not
+ * {@link LoopRequest#onError()} — with {@code STEP_LIMIT_REACHED}, {@code COST_LIMIT_REACHED} or
+ * {@code TIME_LIMIT_REACHED} and that answer. Runs started with {@link #runAndWait} from inside a
+ * run's tool (e.g. a delegated agent) also count toward the enclosing run's limits; reaching one of
+ * those unwinds to that run, which winds down once. Cancelling ends the run with {@code CANCELLED}.
+ * {@code Execution.terminationReason()} on the result says which happened.
  *
  * <p>When the router compresses history (see {@code HistoryCompressor.newSelfCompressingRouter}),
  * each compression is reported on this run's {@code onMessage} and recorded in its
@@ -122,6 +133,9 @@ public final class AgentLoop {
 
     /** How many memories the loop recalls into each step's context, unprompted. */
     private static final int AUTO_RECALL_LIMIT = 5;
+
+    /** The limits of the run whose thread this is, if any — so a run started inside it (a delegate) shares them. */
+    private static final ScopedValue<Limits> ENCLOSING_LIMITS = ScopedValue.newInstance();
 
     /** How much of a failed tool's exception message the model is shown. */
     private static final int MAX_FAILURE_MESSAGE_CHARS = 1_000;
@@ -553,7 +567,6 @@ public final class AgentLoop {
         private int nextThread = 1;
         /** The thread whose LLM call is in flight — what any compression reported mid-call is attributed to. */
         private int currentThread = 0;
-        private int stepCount = 0;
         /** Every model call this run made, summed. */
         private UsageTotals runUsage = UsageTotals.ZERO;
         /** Where outside content has entered this run (tool names, "attachments"), in order. */
@@ -565,6 +578,12 @@ public final class AgentLoop {
         /** provider/model pairs already warned about dropping attachments, so each warns once. */
         private final java.util.Set<String> attachmentDropWarnings = new java.util.HashSet<>();
         private Response lastResponse;
+        /** This run's step, cost and time limits, linked to those of any run it's nested in; set when it starts executing. */
+        private Limits limits;
+        /** Which limits' warnings this run's model has been given, so each is given once. */
+        private final Map<Limits, EnumSet<TerminationReason>> limitWarningsGiven = new IdentityHashMap<>();
+        /** The goal-directed loops in progress, innermost last: what a wrap-up answers from. */
+        private final Deque<Frame> frames = new ArrayDeque<>();
 
         private volatile boolean cancelRequested;
         private volatile boolean cancelled;
@@ -586,7 +605,7 @@ public final class AgentLoop {
                 this.searchContext = null;
             } else {
                 SemanticSearch.RunContext runContext = new SemanticSearch.RunContext(executionId, scope,
-                        record -> runUsage = runUsage.plus(record),
+                        this::addUsage,
                         warning -> emit(currentThread, MessageType.WARNING, warning));
                 this.scopedWorkspace = settings.workspace().scopedTo(workspacePartition, settings.workspaceLimits(),
                         search.workspaceListener(workspacePartition, runContext));
@@ -639,10 +658,13 @@ public final class AgentLoop {
                     // Cancelled before it started: interrupt ourselves so the first checkpoint stops it.
                     runner.interrupt();
                 }
-                SemanticSearch.withinRun(searchContext, () -> HistoryCompressor.withListener(this, () -> {
-                    executeInScope();
-                    return null;
-                }));
+                limits = new Limits(ENCLOSING_LIMITS.isBound() ? ENCLOSING_LIMITS.get() : null, profile.maxSteps(), request.maxCostUsdCents(),
+                        request.maxDuration(), startedAt, request.windDown());
+                ScopedValue.where(ENCLOSING_LIMITS, limits).run(() ->
+                        SemanticSearch.withinRun(searchContext, () -> HistoryCompressor.withListener(this, () -> {
+                            executeInScope();
+                            return null;
+                        })));
             } finally {
                 done = true;
                 runner = null;
@@ -678,11 +700,11 @@ public final class AgentLoop {
 
                 Response finalResponse = outcome.response().toBuilder().content(outcome.finalAnswer()).build();
                 complete(finalResponse, TerminationReason.COMPLETED);
-            } catch (BudgetExceeded e) {
-                Response truncated = partialResponse(e.lastResponse,
-                        "Stopped early before producing a final answer: a cost or time limit was reached.");
-                recordStep(e.thread, StepAction.TRUNCATED, "budget exceeded", null, null, truncated.getContent(), e.lastResponse);
-                complete(truncated, e.reason);
+            } catch (LimitReached e) {
+                if (e.owner != limits) {
+                    throw e; // an enclosing run's limit: that run winds down, once, for everything inside it
+                }
+                windDown(e.reason);
             } catch (Exception e) {
                 if (cancelled || interruptedBy(e)) {
                     completeCancelled();
@@ -842,6 +864,7 @@ public final class AgentLoop {
                 boolean userFacing) {
             emit(thread, MessageType.THINKING, "Working on: " + goal);
             boolean streaming = userFacing && answerStream != null;
+            frames.addLast(new Frame(systemInstructions, history)); // left in place if a limit unwinds this
 
             while (true) {
                 List<ToolDefinition> availableTools = offeredTools();
@@ -877,7 +900,12 @@ public final class AgentLoop {
                     emit(thread, MessageType.INFO, "Goal complete.");
                     recordStep(thread, StepAction.COMPLETE, goal, null, null, finalAnswer, response);
                     history.add(Message.assistant("Completed: " + goal + "\n\n" + finalAnswer));
+                    frames.removeLast();
                     return new StepOutcome(finalAnswer, response);
+                }
+
+                if (!response.getToolCalls().isEmpty()) {
+                    checkLimitsReached(); // more work requested: only with some budget left
                 }
 
                 Optional<ToolCall> subTask = allowSubTasks
@@ -914,6 +942,7 @@ public final class AgentLoop {
                 emit(thread, MessageType.INFO, "Goal complete.");
                 recordStep(thread, StepAction.COMPLETE, goal, null, null, answer, response);
                 history.add(Message.assistant("Completed: " + goal + "\n\n" + answer));
+                frames.removeLast();
                 return new StepOutcome(answer, response);
             }
         }
@@ -978,7 +1007,7 @@ public final class AgentLoop {
                 if (result == null) {
                     result = execute(thread, call, context);
                 }
-            } catch (BudgetExceeded | Cancelled control) {
+            } catch (LimitReached | Cancelled control) {
                 throw control;
             } catch (RuntimeException e) {
                 if (cancelled || interruptedBy(e)) {
@@ -1062,7 +1091,7 @@ public final class AgentLoop {
                 emit(thread, MessageType.WARNING, "Tool " + call.getName() + " reported: " + e.getMessage());
                 loopAuthoredResult = true;
                 return "Error: " + e.getMessage();
-            } catch (BudgetExceeded | Cancelled control) {
+            } catch (LimitReached | Cancelled control) {
                 throw control;
             } catch (RuntimeException e) {
                 // Anything else the handler threw: the model hears about it and the run carries on.
@@ -1091,17 +1120,19 @@ public final class AgentLoop {
 
         /**
          * Runs the handler on this thread — so scoped context (e.g. delegation depth) still applies —
-         * with a watchdog that interrupts it if it overruns its timeout, or the run's remaining
-         * {@code maxDuration}, whichever is sooner.
+         * with a watchdog that interrupts it if it overruns its timeout, or the time left before this
+         * run's (or an enclosing run's) {@code maxDuration}, whichever is sooner.
          */
         private String withTimeout(int thread, RegisteredTool tool, ToolCall call, ToolContext context) {
             Duration timeout = tool.timeout() != null ? tool.timeout() : settings.toolTimeout();
-            boolean cappedByRun = false;
-            if (request.maxDuration() != null) {
-                Duration remaining = request.maxDuration().minus(Duration.between(startedAt, Instant.now()));
-                if (remaining.compareTo(timeout) < 0) {
-                    timeout = remaining.isNegative() || remaining.isZero() ? Duration.ofMillis(1) : remaining;
-                    cappedByRun = true;
+            Limits cappedBy = null;
+            for (Limits l : limits.outermostFirst()) {
+                if (l.maxDuration != null) {
+                    Duration remaining = l.maxDuration.minus(l.elapsed());
+                    if (remaining.compareTo(timeout) < 0) {
+                        timeout = remaining.isNegative() || remaining.isZero() ? Duration.ofMillis(1) : remaining;
+                        cappedBy = l;
+                    }
                 }
             }
 
@@ -1136,9 +1167,9 @@ public final class AgentLoop {
             if (cancelled) {
                 throw new Cancelled();
             }
-            if (cappedByRun) {
-                emit(thread, MessageType.WARNING, "Stopping early: time limit reached during tool " + call.getName() + ".");
-                throw new BudgetExceeded(thread, TerminationReason.TIME_LIMIT_REACHED, lastResponse);
+            if (cappedBy != null) {
+                emit(thread, MessageType.WARNING, "Time limit reached during tool " + call.getName() + ".");
+                throw new LimitReached(cappedBy, TerminationReason.TIME_LIMIT_REACHED);
             }
             throw new ToolInputException(call.getName() + " didn't finish within " + humanDuration(timeout)
                     + " and was stopped; try a smaller request or a different approach");
@@ -1202,18 +1233,34 @@ public final class AgentLoop {
         // ---- model calls and limits -----------------------------------------------------------
 
         /**
-         * Every working LLM call the run makes goes through here, so each one counts toward
-         * {@code maxSteps} and the budgets, and is metered. {@code stream}: deliver this call's text
-         * to the {@link AnswerStream} as it's generated.
+         * Every working LLM call the run makes goes through here, so each one is checked against the
+         * limits first, counts toward {@code maxSteps}, carries any due limit warning (working steps
+         * only), and is metered. {@code stream}: deliver this call's text to the {@link AnswerStream}
+         * as it's generated.
          */
         private Response call(int thread, Request req, boolean stream, UsagePurpose purpose) {
             checkCancelled();
-            checkStepBudget();
             currentThread = thread;
+            checkLimitsReached();
+            if (purpose == UsagePurpose.STEP) {
+                req = withLimitWarnings(thread, req);
+            }
+            for (Limits l = limits; l != null; l = l.enclosing) {
+                l.steps++;
+            }
+            Response response = send(req, stream);
+            meter(purpose, response);
+            warnIfAttachmentsDropped(thread, response);
+            checkCancelled();
+            lastResponse = response;
+            return response;
+        }
+
+        /** One model call, streamed to the {@link AnswerStream} if {@code stream} and there is one. */
+        private Response send(Request req, boolean stream) {
             streamedThisCall = false;
-            Response response;
             if (stream && answerStream != null) {
-                response = router.completeStreaming(req, new StreamListener() {
+                return router.completeStreaming(req, new StreamListener() {
                     @Override
                     public void onText(String delta) {
                         streamedThisCall = true;
@@ -1226,15 +1273,8 @@ public final class AgentLoop {
                         answerStream.onDiscard();
                     }
                 });
-            } else {
-                response = router.complete(req);
             }
-            meter(purpose, response);
-            warnIfAttachmentsDropped(thread, response);
-            checkCancelled();
-            lastResponse = response;
-            checkBudgets(thread, response);
-            return response;
+            return router.complete(req);
         }
 
         /** Records one model call's usage on the run's totals and with the loop's {@link UsageMeter}. */
@@ -1244,8 +1284,16 @@ public final class AgentLoop {
                     usage == null ? 0 : usage.getInputTokens(), usage == null ? 0 : usage.getOutputTokens(),
                     usage == null ? 0 : usage.getEstimatedCostUsdCents(), usage == null ? 0 : usage.getEstimatedCostUsdMicros(),
                     Instant.now());
-            runUsage = runUsage.plus(record);
+            addUsage(record);
             settings.usageMeter().record(record);
+        }
+
+        /** Adds a metered call to this run's totals and to the spend of its limits (and enclosing runs'). */
+        private void addUsage(UsageRecord record) {
+            runUsage = runUsage.plus(record);
+            for (Limits l = limits; l != null; l = l.enclosing) {
+                l.spentMicros += record.costUsdMicros();
+            }
         }
 
         /**
@@ -1322,32 +1370,173 @@ public final class AgentLoop {
             recordStep(currentThread, StepAction.HISTORY_COMPRESSION, description, null, null, null, null);
         }
 
-        private void checkStepBudget() {
-            stepCount++;
-            if (stepCount > profile.maxSteps()) {
-                throw new AgentLoopStepLimitExceededException(profile.maxSteps());
+        /**
+         * Checked before every working call, and before acting on a response's tool calls — so a
+         * call already in flight when a bound is crossed still completes, and a final answer that
+         * crosses one still counts as {@code COMPLETED}. Approximate: bounds are met "at or after",
+         * never exactly. Throws {@link LimitReached} to unwind every nested call (plan steps,
+         * sub-tasks, delegated runs) straight back to the run whose limit it is; the outermost
+         * reached limit wins.
+         */
+        private void checkLimitsReached() {
+            for (Limits l : limits.outermostFirst()) {
+                TerminationReason reached = l.reached();
+                if (reached != null) {
+                    throw new LimitReached(l, reached);
+                }
             }
         }
 
-        /**
-         * Approximate, checked after {@code response} comes back rather than before the call that
-         * produced it — so a step already in flight when a bound is crossed still completes, and
-         * the bound is met "at or after", never exactly. Throws {@link BudgetExceeded} to unwind
-         * every nested call (plan steps, sub-tasks) straight back to {@link #execute()} in one go.
-         */
-        private void checkBudgets(int thread, Response response) {
-            // Everything the run has spent so far, in micro-dollars so many small calls aren't rounded away.
-            Integer maxCost = request.maxCostUsdCents();
-            if (maxCost != null && runUsage.costUsdMicros() >= maxCost * 10_000L) {
-                emit(thread, MessageType.WARNING, "Stopping early: cost limit reached.");
-                throw new BudgetExceeded(thread, TerminationReason.COST_LIMIT_REACHED, response);
+        /** {@code req} plus a system note for each limit (this run's or an enclosing run's) that's now close and not yet warned about. */
+        private Request withLimitWarnings(int thread, Request req) {
+            List<String> notes = new ArrayList<>();
+            for (Limits l : limits.outermostFirst()) {
+                EnumSet<TerminationReason> given =
+                        limitWarningsGiven.computeIfAbsent(l, k -> EnumSet.noneOf(TerminationReason.class));
+                for (TerminationReason kind : LIMIT_KINDS) {
+                    String left = given.contains(kind) ? null : l.closeTo(kind);
+                    if (left != null) {
+                        given.add(kind);
+                        notes.add(left);
+                        emit(thread, MessageType.WARNING, "Close to the " + l.name(kind) + ": " + left + "; asking for a final answer.");
+                    }
+                }
             }
+            if (notes.isEmpty()) {
+                return req;
+            }
+            List<Message> history = new ArrayList<>(req.getHistory());
+            history.add(Message.system(LIMIT_WARNING_PREFIX + String.join("; ", notes) + ". Stop gathering information "
+                    + "and don't start new work: give your final answer now, from what you already have. If something "
+                    + "is unfinished or uncertain, say so in the answer."));
+            return req.toBuilder().history(List.copyOf(history)).build();
+        }
 
-            Duration maxDuration = request.maxDuration();
-            if (maxDuration != null && Duration.between(startedAt, Instant.now()).compareTo(maxDuration) >= 0) {
-                emit(thread, MessageType.WARNING, "Stopping early: time limit reached.");
-                throw new BudgetExceeded(thread, TerminationReason.TIME_LIMIT_REACHED, response);
+        /**
+         * This run reached one of its own limits: one last call with tools off asks for the best
+         * complete answer from what the innermost goal in progress gathered, and the run ends with
+         * {@code reason} and that answer — or, if that call fails or overruns, its last response.
+         */
+        private void windDown(TerminationReason reason) {
+            int thread = currentThread;
+            emit(thread, MessageType.WARNING, "Reached the " + limits.name(reason) + ": asking for a final answer from what's been gathered.");
+            Response answer;
+            try {
+                answer = wrapUp(reason);
+            } catch (Cancelled e) {
+                completeCancelled();
+                return;
             }
+            if (answer == null) {
+                Response truncated = partialResponse(lastResponse,
+                        "Stopped at the " + limits.name(reason) + " before producing a final answer.");
+                recordStep(thread, StepAction.TRUNCATED, limits.name(reason) + " reached", null, null, truncated.getContent(), lastResponse);
+                complete(truncated, reason, false);
+                return;
+            }
+            recordStep(thread, StepAction.WRAP_UP, limits.name(reason) + " reached", null, null, answer.getContent(), answer);
+            complete(answer, reason, true);
+        }
+
+        /** The wrap-up call, under its own time allowance; {@code null} if it failed, overran or said nothing. */
+        private Response wrapUp(TerminationReason reason) {
+            checkCancelled();
+            Frame frame = frames.peekLast();
+            String systemInstructions = frame != null ? frame.systemInstructions() : withSafetyGuidance(profileInstructions());
+            List<Message> gathered = frame != null ? toolUseAsText(frame.history()) : List.of();
+            Request req = request(WRAP_UP_PREFIX + limits.name(reason) + ", so you can't use tools or do any more work. "
+                    + "Using only what has been gathered so far, give your best complete final answer to the request below, "
+                    + "addressed to the user. If anything is unfinished or uncertain, say so briefly.\n\nRequest:\n"
+                    + request.prompt(), systemInstructions, gathered)
+                    .config(routerConfig)
+                    .build();
+
+            Duration allowance = request.windDown().wrapUpTimeout();
+            Thread self = Thread.currentThread();
+            AtomicBoolean finished = new AtomicBoolean();
+            Thread watchdog = Thread.ofVirtual().start(() -> {
+                try {
+                    Thread.sleep(allowance);
+                    if (finished.compareAndSet(false, true)) {
+                        self.interrupt();
+                    }
+                } catch (InterruptedException ignored) {
+                    // the call finished first
+                }
+            });
+            String failure;
+            try {
+                Response response = send(req, true);
+                meter(UsagePurpose.WRAP_UP, response);
+                if (finished.compareAndSet(false, true)) {
+                    if (response.getContent() != null && !response.getContent().isBlank()) {
+                        return response;
+                    }
+                    failure = "the model gave no answer";
+                } else {
+                    failure = null;
+                }
+            } catch (RuntimeException e) {
+                if (!finished.compareAndSet(false, true)) {
+                    failure = null; // our watchdog's interrupt
+                } else if (cancelled || interruptedBy(e)) {
+                    throw new Cancelled();
+                } else {
+                    failure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                }
+            } finally {
+                watchdog.interrupt();
+            }
+            if (failure == null) {
+                Thread.interrupted(); // the watchdog's
+                if (cancelled) {
+                    throw new Cancelled();
+                }
+                failure = "it took longer than " + humanDuration(allowance);
+            }
+            if (streamedThisCall) {
+                answerStream.onDiscard();
+            }
+            emit(currentThread, MessageType.WARNING, "Couldn't get a final answer (" + failure + "); ending with the last response.");
+            return null;
+        }
+
+        /**
+         * {@code history} with tool use written out as plain text — the wrap-up call offers no tools,
+         * and providers reject tool calls in history without them (or without their results, as
+         * when a delegated run is cut short).
+         */
+        private List<Message> toolUseAsText(List<Message> history) {
+            Map<String, String> toolNames = new HashMap<>();
+            List<Message> out = new ArrayList<>();
+            StringBuilder results = null;
+            for (Message message : history) {
+                if (message.getRole() == Role.TOOL) {
+                    results = results == null ? new StringBuilder() : results.append("\n\n");
+                    results.append("[Result of ").append(toolNames.getOrDefault(message.getToolCallId(), "a tool")).append("]\n")
+                            .append(message.getContent());
+                    continue;
+                }
+                if (results != null) {
+                    out.add(Message.user(results.toString()));
+                    results = null;
+                }
+                if (message.getToolCalls() == null || message.getToolCalls().isEmpty()) {
+                    out.add(message);
+                    continue;
+                }
+                StringBuilder text = new StringBuilder(message.getContent() == null ? "" : message.getContent().strip());
+                for (ToolCall toolCall : message.getToolCalls()) {
+                    toolNames.put(toolCall.getId(), toolCall.getName());
+                    text.append(text.isEmpty() ? "" : "\n").append("[Called ").append(toolCall.getName()).append(' ')
+                            .append(JSON.writeValueAsString(toolCall.getArguments())).append(']');
+                }
+                out.add(Message.assistant(text.toString()));
+            }
+            if (results != null) {
+                out.add(Message.user(results.toString()));
+            }
+            return out;
         }
 
         // ---- reporting ----------------------------------------------------------------------
@@ -1372,7 +1561,12 @@ public final class AgentLoop {
         }
 
         private void complete(Response finalResponse, TerminationReason reason) {
-            Map<String, Object> structured = reason == TerminationReason.COMPLETED && request.answerSchema() != null
+            complete(finalResponse, reason, reason == TerminationReason.COMPLETED);
+        }
+
+        /** {@code answered}: {@code finalResponse} is a real answer (completed or wrapped up), so it gets a structured form too. */
+        private void complete(Response finalResponse, TerminationReason reason, boolean answered) {
+            Map<String, Object> structured = answered && request.answerSchema() != null
                     ? structuredAnswer(finalResponse.getContent())
                     : null;
             saveConversationTurn(finalResponse.getContent());
@@ -1488,21 +1682,128 @@ public final class AgentLoop {
     private record StepOutcome(String finalAnswer, Response response) {
     }
 
-    /**
-     * Internal control-flow signal only — unwinds straight from wherever a bound was crossed
-     * (however deep in nested plan-step/sub-task calls) back to {@link Run#execute()}, which
-     * turns it into a graceful, non-error {@link AgentLoopResult}. Never surfaced to callers.
-     */
-    private static final class BudgetExceeded extends RuntimeException {
-        private final int thread;
-        private final TerminationReason reason;
-        private final Response lastResponse;
+    /** The step, cost and time limits whose warnings and wrap-ups a run handles. */
+    private static final List<TerminationReason> LIMIT_KINDS = List.of(
+            TerminationReason.STEP_LIMIT_REACHED, TerminationReason.COST_LIMIT_REACHED, TerminationReason.TIME_LIMIT_REACHED);
 
-        BudgetExceeded(int thread, TerminationReason reason, Response lastResponse) {
+    /** Starts the system note added to a model call when a limit is close. */
+    static final String LIMIT_WARNING_PREFIX = "Limit warning: ";
+
+    /** Starts the prompt of the final, tools-off call when a limit is reached. */
+    static final String WRAP_UP_PREFIX = "You've reached this run's ";
+
+    /** A goal-directed loop in progress: what a wrap-up call answers from. */
+    private record Frame(String systemInstructions, List<Message> history) {
+    }
+
+    /**
+     * One run's limits and what's been used against them. A run started on a run's own thread (a
+     * delegated agent via {@link #runAndWait}) links to the enclosing run's, and its model calls
+     * count against both. Only ever touched on that one thread.
+     */
+    private static final class Limits {
+        final Limits enclosing;
+        final int maxSteps;
+        final Long maxCostMicros;
+        final Duration maxDuration;
+        final Instant startedAt;
+        final WindDown windDown;
+        int steps;
+        long spentMicros;
+
+        Limits(Limits enclosing, int maxSteps, Integer maxCostUsdCents, Duration maxDuration, Instant startedAt, WindDown windDown) {
+            this.enclosing = enclosing;
+            this.maxSteps = maxSteps;
+            this.maxCostMicros = maxCostUsdCents == null ? null : maxCostUsdCents * 10_000L;
+            this.maxDuration = maxDuration;
+            this.startedAt = startedAt;
+            this.windDown = windDown;
+        }
+
+        /** These limits and every enclosing run's, outermost first. */
+        List<Limits> outermostFirst() {
+            List<Limits> chain = new ArrayList<>();
+            for (Limits l = this; l != null; l = l.enclosing) {
+                chain.addFirst(l);
+            }
+            return chain;
+        }
+
+        Duration elapsed() {
+            return Duration.between(startedAt, Instant.now());
+        }
+
+        /** Which limit has been reached, if any. */
+        TerminationReason reached() {
+            if (steps >= maxSteps) {
+                return TerminationReason.STEP_LIMIT_REACHED;
+            }
+            if (maxCostMicros != null && spentMicros >= maxCostMicros) {
+                return TerminationReason.COST_LIMIT_REACHED;
+            }
+            if (maxDuration != null && elapsed().compareTo(maxDuration) >= 0) {
+                return TerminationReason.TIME_LIMIT_REACHED;
+            }
+            return null;
+        }
+
+        /** How much of limit {@code kind} is left, as text, if it's now within the warning threshold; else {@code null}. */
+        String closeTo(TerminationReason kind) {
+            return switch (kind) {
+                case STEP_LIMIT_REACHED -> {
+                    int left = maxSteps - steps; // counting the call about to be made
+                    yield windDown.warnAtStepsLeft() > 0 && left <= windDown.warnAtStepsLeft()
+                            ? left + " of " + maxSteps + " step(s) left, counting this one"
+                            : null;
+                }
+                case COST_LIMIT_REACHED -> maxCostMicros != null && spentMicros >= windDown.warnAtCostFraction() * maxCostMicros
+                        ? "about " + dollars(Math.max(0, maxCostMicros - spentMicros)) + " of the " + dollars(maxCostMicros)
+                                + " cost limit left"
+                        : null;
+                case TIME_LIMIT_REACHED -> {
+                    if (maxDuration == null) {
+                        yield null;
+                    }
+                    Duration elapsed = elapsed();
+                    Duration left = maxDuration.minus(elapsed);
+                    yield elapsed.toMillis() >= windDown.warnAtTimeFraction() * maxDuration.toMillis()
+                            ? "about " + humanDuration(left.isNegative() ? Duration.ZERO : left) + " of the "
+                                    + humanDuration(maxDuration) + " time limit left"
+                            : null;
+                }
+                default -> null;
+            };
+        }
+
+        /** E.g. "step limit (25 steps)". */
+        String name(TerminationReason kind) {
+            return switch (kind) {
+                case STEP_LIMIT_REACHED -> "step limit (" + maxSteps + " steps)";
+                case COST_LIMIT_REACHED -> "cost limit (" + dollars(maxCostMicros) + ")";
+                case TIME_LIMIT_REACHED -> "time limit (" + humanDuration(maxDuration) + ")";
+                default -> kind.name();
+            };
+        }
+
+        private static String dollars(long micros) {
+            return String.format(Locale.ROOT, "$%.2f", micros / 1_000_000.0);
+        }
+    }
+
+    /**
+     * Internal control-flow signal only — unwinds straight from wherever a limit was reached
+     * (however deep in nested plan-step, sub-task or delegated-run calls) back to the run that
+     * owns the limit, which winds down with a graceful, non-error {@link AgentLoopResult}. Never
+     * surfaced to callers.
+     */
+    private static final class LimitReached extends RuntimeException {
+        private final Limits owner;
+        private final TerminationReason reason;
+
+        LimitReached(Limits owner, TerminationReason reason) {
             super(null, null, false, false);
-            this.thread = thread;
+            this.owner = owner;
             this.reason = reason;
-            this.lastResponse = lastResponse;
         }
     }
 

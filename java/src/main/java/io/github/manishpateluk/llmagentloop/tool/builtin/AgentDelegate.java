@@ -2,7 +2,6 @@ package io.github.manishpateluk.llmagentloop.tool.builtin;
 
 import io.github.manishpateluk.llmagentloop.AgentLoop;
 import io.github.manishpateluk.llmagentloop.AgentLoopResult;
-import io.github.manishpateluk.llmagentloop.AgentLoopStepLimitExceededException;
 import io.github.manishpateluk.llmagentloop.AgentProfile;
 import io.github.manishpateluk.llmagentloop.LoopRequest;
 import io.github.manishpateluk.llmagentloop.MessageType;
@@ -37,8 +36,10 @@ public interface AgentDelegate {
      * Delegates to {@code loop} running {@code profile}. The delegated run uses the same
      * {@code Scope} as the delegating one — same user, same memory and workspace — and the same
      * {@code LoopRequest.operatingContext}, and its status updates are forwarded, prefixed with this
-     * delegate's name. Its cost and step limits are its own ({@code profile.maxSteps()}); they don't
-     * count against the delegating run's.
+     * delegate's name. It has its own step limit ({@code profile.maxSteps()}) — reaching it, the
+     * delegate wraps up with its best answer, which comes back marked as possibly incomplete — and
+     * its model calls also count toward the delegating run's step, cost and time limits. When one of
+     * those is reached, the delegated run stops and the delegating run winds down, once, for both.
      */
     static AgentDelegate of(String name, String description, AgentLoop loop, AgentProfile profile) {
         return of(name, description, loop, profile, true);
@@ -67,17 +68,12 @@ public interface AgentDelegate {
 
             @Override
             public String run(String task, ToolContext context) {
-                AgentLoopResult result;
-                try {
-                    result = loop.runAndWait(LoopRequest.builder()
-                            .prompt(task)
-                            .agentProfile(profile)
-                            .operatingContext(inheritOperatingContext ? context.operatingContext() : null)
-                            .scope(context.scope())
-                            .onMessage(message -> context.report(message.type(), "[" + name + "] " + message.message())));
-                } catch (AgentLoopStepLimitExceededException e) {
-                    throw new ToolInputException(name + " ran out of steps before finishing; try a smaller, more specific task");
-                }
+                AgentLoopResult result = loop.runAndWait(LoopRequest.builder()
+                        .prompt(task)
+                        .agentProfile(profile)
+                        .operatingContext(inheritOperatingContext ? context.operatingContext() : null)
+                        .scope(context.scope())
+                        .onMessage(message -> context.report(message.type(), "[" + name + "] " + message.message())));
                 String answer = result.finalResponse().getContent();
                 TerminationReason reason = result.execution().terminationReason();
                 if (reason != TerminationReason.COMPLETED) {

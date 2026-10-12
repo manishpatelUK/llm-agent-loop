@@ -127,6 +127,22 @@ class WebToolsTest {
     }
 
     @Test
+    void readSizesComeFromTheOptionsAndLongPagesStillPage() {
+        WebFetchOptions small = LOCAL.withReadChars(4, 6);
+
+        assertThat(fetch(small, Map.of("url", base + "/long.txt"))).contains("abcd").doesNotContain("abcde")
+                .contains("call again with offset 4");
+        assertThat(fetch(small, Map.of("url", base + "/long.txt", "offset", 4, "max_chars", 6))).endsWith("efghij");
+        assertThatThrownBy(() -> fetch(small, Map.of("url", base + "/long.txt", "max_chars", 7)))
+                .isInstanceOf(ToolInputException.class);
+        assertThat(String.valueOf(WebTools.fetch(small).definition().getParameters())).contains("up to 6", "Defaults to 4");
+        assertThat(WebFetchOptions.DEFAULT.defaultReadChars()).isEqualTo(20_000);
+        assertThat(WebFetchOptions.DEFAULT.maxReadChars()).isEqualTo(100_000);
+        assertThatThrownBy(() -> LOCAL.withReadChars(10, 5)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LOCAL.withReadChars(0, 5)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void errorStatusesAreReportedToTheModelNotThrown() {
         assertThat(fetch(LOCAL, Map.of("url", base + "/missing"))).contains("Status: 404", "not here");
     }
