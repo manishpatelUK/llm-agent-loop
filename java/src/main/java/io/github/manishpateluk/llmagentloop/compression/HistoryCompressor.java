@@ -123,6 +123,12 @@ public final class HistoryCompressor {
         }
     }
 
+    /** {@code tokens}, lowered to the bound listener's {@link CompressionListener#summaryOutputTokens()} cap, if any. */
+    static int summaryOutputTokens(int tokens) {
+        Integer cap = LISTENER.isBound() ? LISTENER.get().summaryOutputTokens() : null;
+        return cap == null ? tokens : Math.min(tokens, cap);
+    }
+
     /** Compresses using {@link #DEFAULT_METHODS} and no LLM fallback available. */
     public static CompressionOutcome compress(Request request, Provider provider, String model) {
         return compress(request, provider, model, DEFAULT_METHODS, null);

@@ -9,6 +9,12 @@ public enum StepAction {
     /** An explicit {@code Plan} was generated. */
     PLAN_CREATED,
 
+    /**
+     * Plan generation failed or gave a plan that couldn't be used, so the run went on step by step
+     * without one; the step's {@code description} says why.
+     */
+    PLAN_FAILED,
+
     /** A tool (registered or otherwise) was called. */
     TOOL_CALL,
 

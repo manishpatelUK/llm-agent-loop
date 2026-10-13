@@ -182,6 +182,7 @@ loop.run(LoopRequest.builder()
     .maxCostUsdCents(500)                  // optional, approximate — see below
     .maxDuration(Duration.ofMinutes(2))    // optional, approximate — see below
     .windDown(WindDown.DEFAULT.withWarnAtStepsLeft(3)) // optional — how the run winds down at its limits
+    .housekeepingLimits(HousekeepingLimits.DEFAULT.withMaxPlanSteps(8)) // optional — caps on the loop's own calls; see below
     .scope(Scope.of(tenantId, userId, sessionId)) // optional — whose memory/files; see "Memory, workspace and scope"
     .requireAttachmentSupport(true)        // optional — fail rather than send attachments to a model that would drop them
     .build());
@@ -208,6 +209,25 @@ A run has up to three limits: `AgentProfile.maxSteps` (always; default 25), and 
 | `wrapUpTimeout` | 60 s | How long the final tools-off call may take. |
 
 The result's `terminationReason()` is one of `COMPLETED`, `STEP_LIMIT_REACHED`, `COST_LIMIT_REACHED`, `TIME_LIMIT_REACHED` or `CANCELLED`.
+
+#### The loop's own calls: output caps, and planning that can't fail a run
+
+Besides the working steps, a run makes some model calls for itself: the `AUTO` plan check, plan generation, the wrap-up at a limit, turning the answer into `answerSchema` data, and summaries (history compression and conversation compaction). Each of these has a cap on how many tokens the model may generate, sent as llm-router's `Request.maxOutputTokens`. Without a cap, a structured call can run to the model's maximum output, which can mean minutes of generation and a cut-off reply that can't be used. Working steps aren't capped. They keep the model's own maximum.
+
+Planning can't fail a run. If the plan check fails, is cut off or gives no usable answer, the run warns and carries on as if no plan were needed. The same goes for plan generation when it fails, is cut off, can't be read, has no steps or has more steps than allowed. The run sends a `WARNING` status update, records a `PLAN_FAILED` step whose description says why, and works toward the goal step by step. The failed call still counts toward `maxSteps` and is metered as usual. The plan's schema also bounds the plan itself: `maxItems` on `steps`, and `maxLength` on the summary and step descriptions. Providers that can't enforce these in decoding (Anthropic) get them as description text, so the output cap is what really stops a runaway there.
+
+Pass `HousekeepingLimits` with `LoopRequest.housekeepingLimits(...)`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `planCheckTokens` | 2,000 | Output cap for the `AUTO` plan check. |
+| `planTokens` | 8,000 | Output cap for plan generation. |
+| `maxPlanSteps` | 12 | The most steps a plan may have. It's the schema's `maxItems`, and a plan with more steps isn't used. |
+| `wrapUpTokens` | 16,000 | Output cap for the final, tools-off answer when a limit is reached. |
+| `answerFormattingTokens` | 16,000 | Output cap for turning the answer into `answerSchema` data. |
+| `summaryTokens` | 4,000 | Output cap for summaries: `LLM_SUMMARIZATION` compression (also held to its compression target) and the default conversation compactor. |
+
+On reasoning models the cap includes reasoning tokens, so leave headroom if you route housekeeping calls to one. A cap above the model's own maximum is lowered to it.
 
 ### Chat sessions: history, attachments, cancelling, model choice
 
@@ -327,7 +347,7 @@ AgentProfile profile = AgentProfile.builder()
 | Mode | Behavior |
 |---|---|
 | `NEVER_PLAN` | A single one-shot LLM call — no tool loop, no planning. For requests that don't need the full machinery. |
-| `ALWAYS_PLAN` | Generates an explicit `Plan` up front (via structured output), then executes its steps in order. |
+| `ALWAYS_PLAN` | Generates an explicit `Plan` up front (via structured output), then executes its steps in order. If no usable plan comes back, the run warns and goes on step by step (see "The loop's own calls"). |
 | `RECURSIVE_ON_EACH_STEP` | No upfront plan — each step decides its own next action, and may delegate a self-contained sub-goal to a new thread, whose result folds back in once it completes. |
 | `AUTO` (default) | A cheap structured-output call decides between `ALWAYS_PLAN` and `RECURSIVE_ON_EACH_STEP` per request. |
 

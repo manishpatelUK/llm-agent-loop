@@ -45,6 +45,12 @@ final class AgentLoopSchemas {
                     "required", List.of("goal")))
             .build();
 
+    /** Longest one-sentence summary or reason the schemas ask for. */
+    static final int MAX_SUMMARY_CHARS = 300;
+
+    /** Longest plan step description the plan schema asks for. */
+    static final int MAX_STEP_DESCRIPTION_CHARS = 500;
+
     /** Structured-output schema for the cheap {@code PlanMode#AUTO} plan-needed check. */
     static final Map<String, Object> PLAN_NEEDED_SCHEMA = Map.of(
             "type", "object",
@@ -54,26 +60,40 @@ final class AgentLoopSchemas {
                             "description", "Whether accomplishing the goal requires an explicit multi-step plan."),
                     "reason", Map.of(
                             "type", "string",
+                            "maxLength", MAX_SUMMARY_CHARS,
                             "description", "One sentence explaining the decision — shown to the caller as a status update.")),
             "required", List.of("needsPlan", "reason"));
 
-    /** Structured-output schema for generating a {@code Plan}. */
-    static final Map<String, Object> PLAN_SCHEMA = Map.of(
-            "type", "object",
-            "properties", Map.of(
-                    "summary", Map.of(
-                            "type", "string",
-                            "description", "One sentence describing the plan — shown to the caller as a status update."),
-                    "steps", Map.of(
-                            "type", "array",
-                            "items", Map.of(
-                                    "type", "object",
-                                    "properties", Map.of(
-                                            "description", Map.of("type", "string"),
-                                            "suggestedTools", Map.of(
-                                                    "type", "array",
-                                                    "items", Map.of("type", "string")),
-                                            "parallelGroup", Map.of("type", List.of("integer", "null"))),
-                                    "required", List.of("description")))),
-            "required", List.of("summary", "steps"));
+    /** Structured-output schema for generating a {@code Plan} of at most {@code HousekeepingLimits.DEFAULT.maxPlanSteps()} steps. */
+    static final Map<String, Object> PLAN_SCHEMA = planSchema(HousekeepingLimits.DEFAULT.maxPlanSteps());
+
+    /**
+     * Structured-output schema for generating a {@code Plan} of 1 to {@code maxSteps} steps. The
+     * bounds keep constrained decoding from producing an unbounded plan; providers that can't
+     * enforce {@code maxItems}/{@code maxLength} (Anthropic) get them as description text instead.
+     */
+    static Map<String, Object> planSchema(int maxSteps) {
+        return Map.of(
+                "type", "object",
+                "properties", Map.of(
+                        "summary", Map.of(
+                                "type", "string",
+                                "maxLength", MAX_SUMMARY_CHARS,
+                                "description", "One sentence describing the plan — shown to the caller as a status update."),
+                        "steps", Map.of(
+                                "type", "array",
+                                "minItems", 1,
+                                "maxItems", maxSteps,
+                                "description", "The steps, in order: at most " + maxSteps + ", each one a substantial piece of work.",
+                                "items", Map.of(
+                                        "type", "object",
+                                        "properties", Map.of(
+                                                "description", Map.of("type", "string", "maxLength", MAX_STEP_DESCRIPTION_CHARS),
+                                                "suggestedTools", Map.of(
+                                                        "type", "array",
+                                                        "items", Map.of("type", "string")),
+                                                "parallelGroup", Map.of("type", List.of("integer", "null"))),
+                                        "required", List.of("description")))),
+                "required", List.of("summary", "steps"));
+    }
 }

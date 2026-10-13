@@ -694,9 +694,10 @@ public final class AgentLoop {
                     case NEVER_PLAN -> throw new IllegalStateException("unreachable");
                 };
 
-                StepOutcome outcome = recursive
+                Plan plan = recursive ? null : generatePlan(systemInstructions, history);
+                StepOutcome outcome = plan == null
                         ? runGoalDirected(request.prompt(), systemInstructions, history, 0, true, true)
-                        : executePlan(generatePlan(systemInstructions, history), systemInstructions, history, 0);
+                        : executePlan(plan, systemInstructions, history, 0);
 
                 Response finalResponse = outcome.response().toBuilder().content(outcome.finalAnswer()).build();
                 complete(finalResponse, TerminationReason.COMPLETED);
@@ -790,45 +791,121 @@ public final class AgentLoop {
             complete(response, TerminationReason.COMPLETED);
         }
 
-        /** {@code AUTO} only: a cheap call deciding between {@code ALWAYS_PLAN} and {@code RECURSIVE_ON_EACH_STEP} behavior. */
+        /**
+         * {@code AUTO} only: a cheap call deciding between {@code ALWAYS_PLAN} and {@code RECURSIVE_ON_EACH_STEP}
+         * behavior. A call that fails or gives no usable answer only warns, and counts as "no plan needed".
+         */
         private boolean checkPlanNeeded(String systemInstructions) {
+            int maxOutputTokens = request.housekeepingLimits().planCheckTokens();
             Request req = request("Goal: " + request.prompt() + "\n\nDoes accomplishing this require breaking it into an "
                             + "explicit multi-step plan executed in order, or can it be pursued step-by-step, "
                             + "deciding the next action as you go?", systemInstructions, List.of())
                     .responseSchema(AgentLoopSchemas.PLAN_NEEDED_SCHEMA)
                     .config(RouterConfigs.costOptimized(routerConfig))
+                    .maxOutputTokens(maxOutputTokens)
                     .build();
-            Response response = call(0, req, false, UsagePurpose.PLAN_CHECK);
+            Response response = null;
+            String failure;
+            try {
+                response = call(0, req, false, UsagePurpose.PLAN_CHECK);
+                failure = response.getStructuredOutput() != null && response.getStructuredOutput().get("needsPlan") instanceof Boolean
+                        ? null
+                        : unusableOutput(response, maxOutputTokens);
+            } catch (RuntimeException e) {
+                rethrowIfRunEnding(e);
+                failure = describe(e);
+            }
+            if (failure != null) {
+                emit(0, MessageType.WARNING, "Couldn't decide whether this needs a plan (" + failure + "); going ahead without one.");
+                recordStep(0, StepAction.PLAN_CHECK, request.prompt(), null, null, "false", response);
+                return false;
+            }
 
             Map<String, Object> out = response.getStructuredOutput();
-            boolean needsPlan = out != null && Boolean.TRUE.equals(out.get("needsPlan"));
-            String reason = out != null ? String.valueOf(out.getOrDefault("reason", "")) : "";
+            boolean needsPlan = Boolean.TRUE.equals(out.get("needsPlan"));
+            String reason = String.valueOf(out.getOrDefault("reason", ""));
             emit(0, MessageType.THINKING, reason.isBlank() ? "Deciding whether this needs a plan." : reason);
             recordStep(0, StepAction.PLAN_CHECK, request.prompt(), null, null, String.valueOf(needsPlan), response);
             return needsPlan;
         }
 
+        /**
+         * The plan, or {@code null} if the call failed or its plan can't be used. That only warns:
+         * the run then works toward the goal step by step, as if no plan were needed.
+         */
         private Plan generatePlan(String systemInstructions, List<Message> history) {
+            HousekeepingLimits housekeeping = request.housekeepingLimits();
             String guidance = profile.planningGuidance().isEmpty()
                     ? ""
                     : "\n\nPlanning guidance:\n- " + String.join("\n- ", profile.planningGuidance());
-            Request req = request("Goal: " + request.prompt() + guidance + "\n\nProduce an ordered list of steps to accomplish this goal.",
+            Request req = request("Goal: " + request.prompt() + guidance + "\n\nProduce an ordered list of steps (at most "
+                            + housekeeping.maxPlanSteps() + ") to accomplish this goal.",
                     systemInstructions, history)
-                    .responseSchema(AgentLoopSchemas.PLAN_SCHEMA)
+                    .responseSchema(AgentLoopSchemas.planSchema(housekeeping.maxPlanSteps()))
                     .config(routerConfig)
+                    .maxOutputTokens(housekeeping.planTokens())
                     .build();
-            Response response = call(0, req, false, UsagePurpose.PLAN);
+            Response response;
+            try {
+                response = call(0, req, false, UsagePurpose.PLAN);
+            } catch (RuntimeException e) {
+                rethrowIfRunEnding(e);
+                return noPlan(describe(e), null);
+            }
 
             Map<String, Object> out = response.getStructuredOutput();
             if (out == null) {
-                throw new IllegalStateException("Plan generation returned no structured output");
+                return noPlan(unusableOutput(response, housekeeping.planTokens()), response);
             }
-            Plan plan = JSON.convertValue(out, Plan.class);
+            Plan plan;
+            try {
+                plan = JSON.convertValue(out, Plan.class);
+            } catch (RuntimeException e) {
+                return noPlan("the plan couldn't be read: " + describe(e), response);
+            }
+            if (plan.steps().isEmpty()) {
+                return noPlan("the plan had no steps", response);
+            }
+            if (plan.steps().size() > housekeeping.maxPlanSteps()) {
+                return noPlan("the plan had " + plan.steps().size() + " steps, more than the " + housekeeping.maxPlanSteps()
+                        + " allowed", response);
+            }
+            if (plan.steps().stream().anyMatch(step -> step.description() == null || step.description().isBlank())) {
+                return noPlan("a plan step had no description", response);
+            }
             String summary = String.valueOf(out.getOrDefault("summary", ""));
             emit(0, MessageType.PROGRESS,
                     summary.isBlank() ? "Created a plan with " + plan.steps().size() + " step(s)." : summary);
             recordStep(0, StepAction.PLAN_CREATED, request.prompt(), null, null, summary, response);
             return plan;
+        }
+
+        private Plan noPlan(String failure, Response response) {
+            emit(0, MessageType.WARNING, "Couldn't make a plan (" + failure + "); working toward the goal step by step instead.");
+            recordStep(0, StepAction.PLAN_FAILED, "Plan generation failed: " + failure, null, null, null, response);
+            return null;
+        }
+
+        /** Why a structured-output reply can't be used: cut off at {@code maxOutputTokens}, or simply no usable output. */
+        private static String unusableOutput(Response response, int maxOutputTokens) {
+            Usage usage = response.getUsage();
+            return usage != null && usage.getOutputTokens() >= maxOutputTokens
+                    ? "the reply was cut off at its " + maxOutputTokens + "-token output limit"
+                    : "the reply had no usable structured output";
+        }
+
+        private static String describe(Throwable e) {
+            return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        }
+
+        /**
+         * A failed housekeeping call only warns, unless the failure is the run ending anyway:
+         * cancellation, an interrupt, or a limit reached (which winds the run down).
+         */
+        private void rethrowIfRunEnding(RuntimeException e) {
+            if (e instanceof Cancelled || e instanceof LimitReached || cancelled || interruptedBy(e)) {
+                throw e;
+            }
         }
 
         /**
@@ -1363,6 +1440,11 @@ public final class AgentLoop {
         }
 
         @Override
+        public Integer summaryOutputTokens() {
+            return request.housekeepingLimits().summaryTokens();
+        }
+
+        @Override
         public void exhausted(Provider provider, String model, CompressionExhaustedException failure) {
             String description = "Could not compress history to fit " + provider + "/" + model
                     + "; the router will try its next candidate, if any";
@@ -1449,6 +1531,7 @@ public final class AgentLoop {
                     + "addressed to the user. If anything is unfinished or uncertain, say so briefly.\n\nRequest:\n"
                     + request.prompt(), systemInstructions, gathered)
                     .config(routerConfig)
+                    .maxOutputTokens(request.housekeepingLimits().wrapUpTokens())
                     .build();
 
             Duration allowance = request.windDown().wrapUpTimeout();
@@ -1588,11 +1671,13 @@ public final class AgentLoop {
                                 + "in the answer; use null for anything it doesn't say.\n\nAnswer:\n" + (answer == null ? "" : answer))
                         .responseSchema(request.answerSchema())
                         .config(routerConfig)
+                        .maxOutputTokens(request.housekeepingLimits().answerFormattingTokens())
                         .build();
                 Response response = router.complete(req);
                 meter(UsagePurpose.ANSWER_FORMATTING, response);
                 if (response.getStructuredOutput() == null) {
-                    emit(0, MessageType.WARNING, "Couldn't turn the answer into the requested structure; structuredAnswer is null.");
+                    emit(0, MessageType.WARNING, "Couldn't turn the answer into the requested structure ("
+                            + unusableOutput(response, req.getMaxOutputTokens()) + "); structuredAnswer is null.");
                 }
                 return response.getStructuredOutput();
             } catch (Cancelled e) {
@@ -1663,6 +1748,7 @@ public final class AgentLoop {
                             + "assistant to continue from. Preserve every fact, decision, preference, commitment, file name and "
                             + "open question; drop pleasantries.\n\nConversation:\n" + transcript)
                     .config(RouterConfigs.costOptimized(routerConfig))
+                    .maxOutputTokens(request.housekeepingLimits().summaryTokens())
                     .build();
             Response response = router.complete(req);
             meter(UsagePurpose.CONVERSATION_COMPACTION, response);

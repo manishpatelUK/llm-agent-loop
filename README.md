@@ -126,6 +126,10 @@ Implemented so far (Java):
     Limits are checked between model calls (met "at or after", never exact) and apply across the
     whole run: plan steps, sub-tasks and delegated agents all count toward them, and reaching one
     anywhere unwinds to the top level, which winds down once.
+  - The loop's own model calls (plan check, plan, wrap-up, answer formatting, summaries) are capped
+    via `llm-router` 1.0.8's `Request.maxOutputTokens` (`LoopRequest.housekeepingLimits`), and
+    the plan schema bounds the plan's size. A plan check or plan that fails, is cut off or can't be
+    used only warns: the run goes on step by step without a plan, rather than failing.
   - Attachments are prepared once per run and the same `Attachment`s reused, unchanged, on every
     call the run makes — which, combined with reusing the same `LlmRouter` instance throughout,
     is exactly what `llm-router` 1.0.2+ needs to deduplicate repeat file uploads by content hash
@@ -246,7 +250,7 @@ See [ROADMAP.md](ROADMAP.md) for what's planned next.
 ## Structure
 
 - [`java/`](java/) — Java implementation (Java 25+), built with Maven, depending on
-  [`llm-router`](https://github.com/manishpatelUK/llm-router) 1.0.5+ from Maven Central, Jackson 3
+  [`llm-router`](https://github.com/manishpatelUK/llm-router) 1.0.8+ from Maven Central, Jackson 3
   (`tools.jackson.*`) for its own JSON handling, jsoup (HTML to text for `web_fetch`), Apache
   POI (spreadsheets, Word/PowerPoint reading) and PDFBox (PDF reading), with their logging bridged
   to SLF4J. All permissively licensed (MIT/Apache 2.0).

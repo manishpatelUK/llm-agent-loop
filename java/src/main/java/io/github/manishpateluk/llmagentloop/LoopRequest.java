@@ -78,6 +78,10 @@ import java.util.function.Consumer;
  * @param windDown        optional; how the run winds down near and at its limits (step, cost and
  *                        time): when the model is warned, and how long the final tools-off answer
  *                        may take. Defaults to {@link WindDown#DEFAULT}.
+ * @param housekeepingLimits optional; caps the output of the model calls the run makes for itself
+ *                        (plan check, plan, wrap-up, answer formatting, summaries) and the number of
+ *                        plan steps — see {@link HousekeepingLimits}. Defaults to
+ *                        {@link HousekeepingLimits#DEFAULT}.
  * @param onUnregisteredTool optional; resolves tool calls the model makes that aren't registered
  *                        on the {@link AgentLoop} — see {@link UnregisteredToolHandler}. Defaults to
  *                        {@link UnregisteredToolHandler#NONE}, which ends the run with an
@@ -106,6 +110,7 @@ public record LoopRequest(
         Integer maxCostUsdCents,
         Duration maxDuration,
         WindDown windDown,
+        HousekeepingLimits housekeepingLimits,
         UnregisteredToolHandler onUnregisteredTool,
         Scope scope) {
 
@@ -138,5 +143,6 @@ public record LoopRequest(
             throw new IllegalArgumentException("maxDuration must be positive when supplied, was " + maxDuration);
         }
         windDown = windDown == null ? WindDown.DEFAULT : windDown;
+        housekeepingLimits = housekeepingLimits == null ? HousekeepingLimits.DEFAULT : housekeepingLimits;
     }
 }

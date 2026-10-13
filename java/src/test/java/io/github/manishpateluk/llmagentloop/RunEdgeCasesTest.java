@@ -4,6 +4,7 @@ import io.github.manishpateluk.llmagentloop.compression.CompressionMethod;
 import io.github.manishpateluk.llmagentloop.compression.HistoryCompressor;
 import io.github.manishpateluk.llmagentloop.conversation.ConversationCompaction;
 import io.github.manishpateluk.llmagentloop.conversation.InMemoryConversationStore;
+import io.github.manishpateluk.llmagentloop.execution.TerminationReason;
 import io.github.manishpateluk.llmagentloop.testing.MockModel;
 import io.github.manishpateluk.llmagentloop.testing.TestRuns;
 import io.github.manishpateluk.llmagentloop.testing.TestRuns.TestRun;
@@ -184,25 +185,29 @@ class RunEdgeCasesTest {
     }
 
     @Test
-    void aPlanWithNoStepsFailsTheRun() {
-        MockModel model = new MockModel().plan();
+    void aPlanWithNoStepsIsSetAsideAndTheRunCarriesOnWithoutOne() {
+        MockModel model = new MockModel().plan().reply("Done without a plan.");
 
         TestRun run = TestRuns.run(model.loopBuilder().build(),
                 LoopRequest.builder().prompt("Do a thing").agentProfile(ALWAYS_PLAN));
 
-        assertThat(run.error()).hasMessageContaining("Plan had no steps");
+        assertThat(run.error()).isNull();
+        assertThat(run.answer()).isEqualTo("Done without a plan.");
+        assertThat(run.messages(MessageType.WARNING)).containsExactly(
+                "Couldn't make a plan (the plan had no steps); working toward the goal step by step instead.");
     }
 
     @Test
-    void aPlanCallWithNoStructuredOutputFailsTheRun() {
-        MockModel model = new MockModel().respond(request -> Response.builder().content("").build());
+    void aPlanCallWithNoStructuredOutputIsSetAsideAndTheRunCarriesOnWithoutOne() {
+        MockModel model = new MockModel().respond(request -> Response.builder().content("").build()).reply("Done.");
 
         TestRun run = TestRuns.run(model.loopBuilder().build(),
                 LoopRequest.builder().prompt("Do a thing").agentProfile(ALWAYS_PLAN));
 
-        assertThat(run.error()).isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Plan generation returned no structured output");
-        assertThat(run.result()).isNull();
+        assertThat(run.error()).isNull();
+        assertThat(run.result().execution().terminationReason()).isEqualTo(TerminationReason.COMPLETED);
+        assertThat(run.messages(MessageType.WARNING)).singleElement().asString()
+                .contains("the reply had no usable structured output");
     }
 
     @Test

@@ -25,4 +25,12 @@ public interface CompressionListener {
     /** Compression itself made a model call (the {@code LLM_SUMMARIZATION} tier) — e.g. so its tokens can be metered. */
     default void modelCall(Response response) {
     }
+
+    /**
+     * The most tokens an {@code LLM_SUMMARIZATION} summary may run to, on top of its compression
+     * target; {@code null} (the default) for no cap beyond the target.
+     */
+    default Integer summaryOutputTokens() {
+        return null;
+    }
 }

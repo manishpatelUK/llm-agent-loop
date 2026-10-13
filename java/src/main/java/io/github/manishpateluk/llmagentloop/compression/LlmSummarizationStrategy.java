@@ -22,6 +22,9 @@ final class LlmSummarizationStrategy implements CompressionStrategy {
     /** Most recent turns are kept verbatim so the model has unaltered immediate context. */
     private static final int VERBATIM_TAIL_SIZE = 2;
 
+    /** A summary may run to its compression target, but no less than this — tiny targets still need a sentence or two. */
+    private static final int MIN_SUMMARY_OUTPUT_TOKENS = 256;
+
     @Override
     public Request compress(Request request, int targetTokens, LlmRouter router) {
         List<Message> history = request.getHistory();
@@ -53,7 +56,8 @@ final class LlmSummarizationStrategy implements CompressionStrategy {
                 + "continuing assistant would need. Target roughly " + targetWords + " words.\n\n"
                 + "Transcript:\n" + transcript;
 
-        Response response = router.complete(prompt);
+        int maxOutputTokens = HistoryCompressor.summaryOutputTokens(Math.max(MIN_SUMMARY_OUTPUT_TOKENS, targetTokens));
+        Response response = router.complete(Request.builder().prompt(prompt).maxOutputTokens(maxOutputTokens).build());
         HistoryCompressor.reportModelCall(response);
         return response.getContent();
     }
