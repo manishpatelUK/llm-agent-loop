@@ -1,5 +1,6 @@
 package io.github.manishpateluk.llmagentloop.agent;
 
+import io.github.manishpateluk.llmrouter.config.FallbackPolicy;
 import io.github.manishpateluk.llmrouter.config.RouteEntry;
 import io.github.manishpateluk.llmrouter.config.RouterConfig;
 import io.github.manishpateluk.llmrouter.config.ThinkingLevel;
@@ -91,6 +92,26 @@ class AgentTest {
                 RouteEntry.of(Provider.OPENROUTER, "some/model"));
         assertThat(config.getThinkingLevel()).isEqualTo(ThinkingLevel.HIGH);
         assertThat(config.isCostOptimized()).isTrue();
+    }
+
+    @Test
+    void frontMatterSetsTheFallbackPolicy() {
+        assertThat(Agent.fromMarkdown("---\nname: a\nfallback: finish\n---\nx").profile().routerConfig().getFallback())
+                .isEqualTo(FallbackPolicy.FINISH);
+        assertThat(Agent.fromMarkdown("---\nname: a\nfallback: same_depth\n---\nx").profile().routerConfig().getFallback())
+                .isEqualTo(FallbackPolicy.SAME_DEPTH);
+        assertThat(Agent.fromMarkdown("---\nname: a\nfallback: sameDepth\n---\nx").profile().routerConfig().getFallback())
+                .isEqualTo(FallbackPolicy.SAME_DEPTH);
+
+        RouterConfig combined = Agent.fromMarkdown("---\nname: a\nthinking_level: high\ncost_optimized: true\nfallback: FINISH\n---\nx")
+                .profile().routerConfig();
+        assertThat(combined.getThinkingLevel()).isEqualTo(ThinkingLevel.HIGH);
+        assertThat(combined.isCostOptimized()).isTrue();
+        assertThat(combined.getFallback()).isEqualTo(FallbackPolicy.FINISH);
+
+        assertThatThrownBy(() -> Agent.fromMarkdown("---\nname: a\nfallback: give_up\n---\nx"))
+                .hasMessageContaining("fallback must be one of same_depth, finish");
+        assertThat(Agent.fromMarkdown("---\nname: a\nfallback: finish\n---\nx").metadata()).doesNotContainKey("fallback");
     }
 
     @Test

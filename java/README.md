@@ -101,7 +101,7 @@ RunHandle handle = runtime.run(assistant, LoopRequest.builder()
 AgentLoopResult result = runtime.runAndWait(assistant, userMessage, scope);
 ```
 
-- **Front matter can choose models.** `models: anthropic/claude-sonnet-5-5, openai` gives a preference order; a provider on its own lets the router pick its model. `thinking_level` and `cost_optimized` can also be set, or use `Agent.builder(md).routerConfig(...)`.
+- **Front matter can choose models.** `models: anthropic/claude-sonnet-5-5, openai` gives a preference order; a provider on its own lets the router pick its model. `thinking_level`, `cost_optimized` and `fallback` (`same_depth`, the default, or `finish` to step down a thinking level rather than fail) can also be set, or use `Agent.builder(md).routerConfig(...)`.
 - **The Markdown body becomes the agent's instructions, verbatim.** Front matter is optional apart from `name`, which must match `^[a-zA-Z0-9_-]{1,64}$` because other agents delegate by name. It can also be set with `Agent.builder(md).name(...)`.
 - **Your own front matter keys are kept.** Keys the library doesn't use (`skills:`, `silos:`, anything) end up in `agent.metadata()`, an ordered, unmodifiable `Map<String, String>` with lower-cased keys. The library otherwise ignores them. Known keys are still validated, so `plan_mode: sometimes` fails. To catch misspelled key names in definitions that carry no data of yours, call `Agent.builder(md).strictFrontMatter()`, which rejects unknown keys.
 - **Skills** bundle tools with guidance. The ready-made ones in `Skills` are `memory()`, `files()`, `spreadsheets()`, `dataAnalysis()`, `knowledge()`, `web(...)`, `email(...)`, `calendar(...)` and `askingTheUser(...)`. You can make your own with `new Skill(name, description, instructions, tools)`. An instruction-only skill (no tools) is also how to give an agent reference knowledge.
@@ -325,7 +325,21 @@ AgentLoop.builder()
 - **The store must support it.** Compaction needs the store's `replace` (see "A custom `ConversationStore`" below). A store without it is left alone, with a warning.
 - **Failures.** A failed compaction is a warning, never a failed turn.
 
-**Choosing models.** Set a default `RouterConfig` per agent with `AgentProfile.builder().routerConfig(...)`, or in an `Agent`'s front matter. Override it per run with `LoopRequest.builder().routerConfig(...)`. That's how you run chat on a cheap model and contract drafting on a strong one, or pin a provider per tenant. The loop keeps your choices and adds only what its own calls need: tool support where tools are offered, and cost-optimized ordering for its internal plan check.
+**Choosing models.** Set a default `RouterConfig` per agent with `AgentProfile.builder().routerConfig(...)`, or in an `Agent`'s front matter. Override it per run with `LoopRequest.builder().routerConfig(...)`. That's how you run chat on a cheap model and contract drafting on a strong one, or pin a provider per tenant. The loop keeps your choices and adds only what its own calls need: tool support where tools are offered, and cost-optimized ordering for its internal plan check. Every field of your `RouterConfig` survives those additions, including ones llm-router adds later (such as `fallback` and `sendThinkingLevel`).
+
+**Preferences that hold across a whole run.** `LoopRequest.builder().routerConfigAdjuster(...)` takes a `UnaryOperator<RouterConfig>` that's applied to the routing of every agent the run uses, delegates included, after each one's own routing is chosen. Use it for a user's settings that no agent definition should override, such as how deep to think and how much to spend:
+
+```java
+LoopRequest.builder()
+    .prompt(message)
+    .routerConfigAdjuster(config -> config.toBuilder()
+        .fallback(FallbackPolicy.FINISH)      // step down a thinking level rather than fail
+        .costOptimized(founder.keepCostDown())
+        .sendThinkingLevel(true)              // pass the thinking level to the model's reasoning effort
+        .build())
+```
+
+When no routing is set anywhere, it receives the default `RouterConfig`.
 
 ### Shaping agent behavior: `AgentProfile`
 
@@ -653,6 +667,7 @@ With `AgentRuntime`, use `Agent.builder(...).delegateTo(otherAgent)`. At a lower
 - Its status updates are forwarded, prefixed `[legal]`.
 - It shares the delegating run's limits: its model calls count toward that run's steps, cost and time, and if one of those is reached while it works, it stops and the delegating run winds down (see "Winding down at a limit"). Its own profile's `maxSteps` also applies: reaching that, it wraps up with its best answer, which comes back marked as possibly incomplete.
 - It inherits the delegating run's `operatingContext` unless the delegate opts out (`runtime.delegate(agent, false)`, or `AgentDelegate.of(..., false)`).
+- It routes with its own profile's route and thinking level, but takes the delegating run's routing preferences: `costOptimized`, `fallback`, `sendThinkingLevel`, and its required features (added to the delegate's own, so `requireAttachmentSupport` carries down too). The delegating run's `routerConfigAdjuster` is applied to it as well. When the delegating run has no routing of its own, the delegate routes exactly as its profile says.
 - Chains are capped at `DelegationTools.MAX_DEPTH` (3), so agents that delegate to each other can't recurse forever.
 - **Many delegates.** The tool's description lists each delegate on one line, as name plus the first line of its description, cut to `DelegationTools.MAX_SUMMARY_CHARS` (160). The `agent` parameter is an enum of the valid names, and an unknown name is a fixable error listing them. Keep descriptions to one informative line: with dozens of delegates, this list is most of the tool's size. With about 40 delegates it comes to 2–3k characters. Some providers may limit how long a tool description can be; this hasn't been checked against each one (see ROADMAP.md).
 

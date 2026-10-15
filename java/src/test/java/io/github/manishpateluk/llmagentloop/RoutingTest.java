@@ -1,5 +1,6 @@
 package io.github.manishpateluk.llmagentloop;
 
+import io.github.manishpateluk.llmrouter.config.FallbackPolicy;
 import io.github.manishpateluk.llmrouter.config.Feature;
 import io.github.manishpateluk.llmrouter.config.RouteEntry;
 import io.github.manishpateluk.llmrouter.config.RouterConfig;
@@ -70,6 +71,44 @@ class RoutingTest {
         assertThat(planCheck.getConfig().isCostOptimized()).isTrue();
         assertThat(planCheck.getConfig().getRoute()).containsExactly(RouteEntry.of(Provider.ANTHROPIC, MODEL));
         assertThat(model.requests.get(1).getConfig().isCostOptimized()).isFalse();
+    }
+
+    @Test
+    void theLoopsOwnAdjustmentsKeepEveryOtherRouterConfigField() {
+        AgentLoop loop = model.loop().build();
+        model.respond(request -> request.getPrompt().contains("Does accomplishing this require")
+                ? Response.builder().content("{\"needsPlan\":false,\"reason\":\"simple\"}").build()
+                : complete("done"));
+        RouterConfig finishing = PINNED.toBuilder().fallback(FallbackPolicy.FINISH).sendThinkingLevel(true).build();
+
+        loop.runAndWait(LoopRequest.builder().prompt("go").agentProfile(profile(PlanMode.AUTO, finishing)));
+
+        assertThat(model.requests).hasSizeGreaterThan(1).allSatisfy(request -> {
+            assertThat(request.getConfig().getFallback()).isEqualTo(FallbackPolicy.FINISH);
+            assertThat(request.getConfig().isSendThinkingLevel()).isTrue();
+            assertThat(request.getConfig().getTemperature()).isEqualTo(0.2);
+        });
+        assertThat(model.requests.getFirst().getConfig().isCostOptimized()).isTrue();             // housekeeping
+        assertThat(model.requests.get(1).getConfig().getRequiredFeatures()).contains(Feature.TOOLS); // working step
+    }
+
+    @Test
+    void anAdjusterAppliesToTheRunsRoutingEvenWhenNoneIsSet() {
+        AgentLoop loop = model.loop().build();
+
+        loop.runAndWait(LoopRequest.builder().prompt("go")
+                .agentProfile(profile(PlanMode.RECURSIVE_ON_EACH_STEP, PINNED))
+                .routerConfigAdjuster(config -> config.toBuilder().fallback(FallbackPolicy.FINISH).build()));
+        RouterConfig adjusted = model.requests.getFirst().getConfig();
+        assertThat(adjusted.getFallback()).isEqualTo(FallbackPolicy.FINISH);
+        assertThat(adjusted.getRoute()).containsExactly(RouteEntry.of(Provider.ANTHROPIC, MODEL));
+        assertThat(adjusted.getThinkingLevel()).isEqualTo(ThinkingLevel.HIGH);
+
+        model.requests.clear();
+        loop.runAndWait(LoopRequest.builder().prompt("go")
+                .agentProfile(AgentProfile.builder().planMode(PlanMode.RECURSIVE_ON_EACH_STEP).build())
+                .routerConfigAdjuster(config -> config.toBuilder().costOptimized(true).build()));
+        assertThat(model.requests.getFirst().getConfig().isCostOptimized()).isTrue();
     }
 
     @Test

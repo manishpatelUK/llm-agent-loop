@@ -6,6 +6,7 @@ import io.github.manishpateluk.llmagentloop.memory.ScopedMemory;
 import io.github.manishpateluk.llmagentloop.search.KnowledgeSearch;
 import io.github.manishpateluk.llmagentloop.workspace.ScopedWorkspace;
 import io.github.manishpateluk.llmagentloop.workspace.WorkspaceFile;
+import io.github.manishpateluk.llmrouter.config.RouterConfig;
 
 import java.util.Map;
 import java.util.Objects;
@@ -13,6 +14,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 
 /**
  * Everything a {@link ToolHandler} knows about the run calling it. Because one agent serves many
@@ -61,6 +63,16 @@ public record ToolContext(
 
         /** The run's {@code LoopRequest.operatingContext}; {@code null} if it has none. */
         default String operatingContext() {
+            return null;
+        }
+
+        /** The run's routing behind {@link ToolContext#routerConfig()}; {@code null} if it has none. */
+        default RouterConfig routerConfig() {
+            return null;
+        }
+
+        /** The run's {@code LoopRequest.routerConfigAdjuster}; {@code null} if it has none. */
+        default UnaryOperator<RouterConfig> routerConfigAdjuster() {
             return null;
         }
 
@@ -122,6 +134,21 @@ public record ToolContext(
      */
     public String operatingContext() {
         return run.operatingContext();
+    }
+
+    /**
+     * How this run's model calls are routed: its {@code LoopRequest.routerConfig} or its profile's,
+     * after its {@code routerConfigAdjuster} and {@code requireAttachmentSupport}, but before the
+     * per-call additions the loop makes (such as requiring tool support). {@code null} when the run
+     * uses the router's defaults. {@code AgentDelegate.of} passes its preferences on to delegates.
+     */
+    public RouterConfig routerConfig() {
+        return run.routerConfig();
+    }
+
+    /** The run's {@code LoopRequest.routerConfigAdjuster}, or {@code null}: {@code AgentDelegate.of} passes it on to delegates. */
+    public UnaryOperator<RouterConfig> routerConfigAdjuster() {
+        return run.routerConfigAdjuster();
     }
 
     /**

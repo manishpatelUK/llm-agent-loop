@@ -1,5 +1,6 @@
 package io.github.manishpateluk.llmagentloop.agent;
 
+import io.github.manishpateluk.llmrouter.config.FallbackPolicy;
 import io.github.manishpateluk.llmrouter.config.RouteEntry;
 import io.github.manishpateluk.llmrouter.config.RouterConfig;
 import io.github.manishpateluk.llmrouter.config.ThinkingLevel;
@@ -38,13 +39,14 @@ import java.util.regex.Pattern;
  * models: anthropic/claude-sonnet-5-5, openai   # preference order; a provider alone lets the router pick its model
  * thinking_level: high       # low | medium | high | max
  * cost_optimized: false
+ * fallback: finish           # same_depth (default: fail once every model at the level fails) | finish (step down a level)
  * ---
  * You are the user's business assistant. You handle admin, finance and product work end to end...
  * }</pre>
  * Everything after the front matter becomes the agent's instructions, verbatim. {@code name} is
  * required (in the front matter or via the builder); it must match {@code ^[a-zA-Z0-9_-]{1,64}$}
- * since other agents delegate to it by name. {@code models}, {@code thinking_level} and
- * {@code cost_optimized} set the agent's default {@link RouterConfig} (also settable with
+ * since other agents delegate to it by name. {@code models}, {@code thinking_level},
+ * {@code cost_optimized} and {@code fallback} set the agent's default {@link RouterConfig} (also settable with
  * {@link Builder#routerConfig}); a run can still override it with {@code LoopRequest.routerConfig}.
  *
  * <p>Any other front matter keys are your application's own data: they're kept, in order, in
@@ -64,7 +66,7 @@ public final class Agent {
 
     /** Front matter keys this library reads; anything else goes to {@link #metadata()}. */
     static final List<String> KNOWN_KEYS =
-            List.of("name", "description", "plan_mode", "max_steps", "models", "thinking_level", "cost_optimized");
+            List.of("name", "description", "plan_mode", "max_steps", "models", "thinking_level", "cost_optimized", "fallback");
 
     private final String name;
     private final String description;
@@ -195,6 +197,7 @@ public final class Agent {
         private List<RouteEntry> models;
         private ThinkingLevel thinkingLevel;
         private Boolean costOptimized;
+        private FallbackPolicy fallback;
         private final List<Skill> skills = new ArrayList<>();
         private final List<Skill> onDemandSkills = new ArrayList<>();
         private final Map<String, String> metadata = new LinkedHashMap<>();
@@ -223,6 +226,7 @@ public final class Agent {
                     case "models" -> models = parseModels(entry.getValue());
                     case "thinking_level" -> thinkingLevel = parseThinkingLevel(entry.getValue());
                     case "cost_optimized" -> costOptimized = parseBoolean("cost_optimized", entry.getValue());
+                    case "fallback" -> fallback = parseFallback(entry.getValue());
                     default -> metadata.put(entry.getKey(), entry.getValue());
                 }
             }
@@ -260,7 +264,7 @@ public final class Agent {
 
         /**
          * The agent's default routing — which providers/models in what order, thinking level, etc.
-         * Replaces anything the front matter's {@code models}/{@code thinking_level}/{@code cost_optimized} set.
+         * Replaces anything the front matter's {@code models}/{@code thinking_level}/{@code cost_optimized}/{@code fallback} set.
          */
         public Builder routerConfig(RouterConfig routerConfig) {
             this.explicitRouterConfig = routerConfig;
@@ -271,7 +275,7 @@ public final class Agent {
             if (explicitRouterConfig != null) {
                 return explicitRouterConfig;
             }
-            if (models == null && thinkingLevel == null && costOptimized == null) {
+            if (models == null && thinkingLevel == null && costOptimized == null && fallback == null) {
                 return null;
             }
             RouterConfig.RouterConfigBuilder config = RouterConfig.builder().route(models);
@@ -280,6 +284,9 @@ public final class Agent {
             }
             if (costOptimized != null) {
                 config.costOptimized(costOptimized);
+            }
+            if (fallback != null) {
+                config.fallback(fallback);
             }
             return config.build();
         }
@@ -465,6 +472,14 @@ public final class Agent {
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("thinking_level must be one of low, medium, high, max; was \"" + value + "\"");
         }
+    }
+
+    private static FallbackPolicy parseFallback(String value) {
+        return switch (value.strip().toLowerCase(Locale.ROOT).replace("-", "_")) {
+            case "same_depth", "samedepth" -> FallbackPolicy.SAME_DEPTH;
+            case "finish" -> FallbackPolicy.FINISH;
+            default -> throw new IllegalArgumentException("fallback must be one of same_depth, finish; was \"" + value + "\"");
+        };
     }
 
     private static boolean parseBoolean(String key, String value) {

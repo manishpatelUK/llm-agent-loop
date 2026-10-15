@@ -613,6 +613,11 @@ public final class AgentLoop {
                 this.searchContext = runContext;
             }
             RouterConfig chosen = request.routerConfig() != null ? request.routerConfig() : profile.routerConfig();
+            if (request.routerConfigAdjuster() != null) {
+                chosen = Objects.requireNonNull(
+                        request.routerConfigAdjuster().apply(chosen != null ? chosen : RouterConfig.builder().build()),
+                        "routerConfigAdjuster returned null");
+            }
             // llm-router's required features turn "drop what the model can't take" into "skip that model".
             this.routerConfig = request.requireAttachmentSupport() ? RouterConfigs.requiring(chosen, Feature.ATTACHMENTS) : chosen;
             this.toolsRequiredConfig = RouterConfigs.requiring(routerConfig, Feature.TOOLS);
@@ -1288,6 +1293,16 @@ public final class AgentLoop {
                 @Override
                 public String operatingContext() {
                     return request.operatingContext();
+                }
+
+                @Override
+                public RouterConfig routerConfig() {
+                    return routerConfig;
+                }
+
+                @Override
+                public java.util.function.UnaryOperator<RouterConfig> routerConfigAdjuster() {
+                    return request.routerConfigAdjuster();
                 }
             });
         }

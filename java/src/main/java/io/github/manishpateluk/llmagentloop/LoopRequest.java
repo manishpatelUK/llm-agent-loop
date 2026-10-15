@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
 
 /**
  * A single request into {@link AgentLoop}: what to do, optionally how the agent should behave
@@ -51,6 +52,14 @@ import java.util.function.Consumer;
  *                        what order, cost-optimized ordering, thinking level. Overrides the agent
  *                        profile's {@link AgentProfile#routerConfig()}. The loop still adds what its
  *                        own calls need (e.g. requiring tool support where tools are offered).
+ * @param routerConfigAdjuster optional; applied to the routing of every agent this run uses — this
+ *                        run's (after {@code routerConfig} or the profile's is chosen) and every agent
+ *                        it delegates to through {@code AgentDelegate.of}, however deep. For
+ *                        preferences that must hold across a whole run whatever each agent's own
+ *                        routing says, e.g. a user's choice of fallback policy or cost-optimized
+ *                        routing: {@code config -> config.toBuilder().fallback(FallbackPolicy.FINISH).build()}.
+ *                        It receives the default {@code RouterConfig} when no routing is set. {@code null}
+ *                        (the default) leaves routing as chosen.
  * @param answerSchema    optional JSON schema for a structured version of the final answer — e.g. to
  *                        render it as cards or feed it to other code. When set, the finished answer is
  *                        converted to JSON matching the schema in one extra (metered) model call, and
@@ -102,6 +111,7 @@ public record LoopRequest(
         Boolean requireAttachmentSupport,
         List<Message> history,
         RouterConfig routerConfig,
+        UnaryOperator<RouterConfig> routerConfigAdjuster,
         Map<String, Object> answerSchema,
         Consumer<AgentLoopResult> onResult,
         Consumer<Throwable> onError,
