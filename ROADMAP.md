@@ -36,6 +36,28 @@ far. Remove an item once it ships (and record it in the README's Status section)
   `ContentScreener` ship. Still to do: a ready-made screener (e.g. a small classifier model through
   `llm-router`), and per-tool trust levels for implementor-owned APIs that don't need labelling.
 
+## Long runs and resilience
+
+Found running long background reports (a 10,000-token report in one answer) in a production app.
+
+- **Stream long calls.** The loop's model calls aren't streamed unless an `AnswerStream` is set; a
+  single 10,000-token answer took two minutes as one blocking call. Stream internally when a call's
+  output cap is high, so long answers are robust to slow providers and time limits can act sooner.
+- **Plans for long tasks.** The planner's output is capped (`HousekeepingLimits.planTokens`, 8,000);
+  for a long task a plan can be cut off mid-JSON and is then dropped ("Could not parse structured
+  output"). Cap the number and length of steps in the planning prompt, or raise the budget when
+  truncation is detected, rather than losing the plan.
+- **Provider retries and errors as messages.** A provider client retrying (the Anthropic Java client
+  sleeps between attempts) or failing is invisible to the caller until the run ends. Surface each
+  retry and error from `llm-router` through `onMessage` as a `WARNING`, so a run whose calls keep
+  failing shows why while it happens.
+- **A heartbeat.** A periodic "still working" callback from a run, so a job queue can tell a slow
+  report from a dead worker rather than relying on a fixed time limit alone.
+- **Answers written in sections.** A request option to write a long answer section by section, each
+  call seeing the sections already written, then joined: for reports too long for one answer. Built
+  in an app first (arthur-os-backend's `RunAgentHandler`, for agents with staged reports); generalise
+  it here.
+
 ## Known limitations
 
 - On-demand skills: `load_skill` remembers per run which skills were loaded, and loading one again
