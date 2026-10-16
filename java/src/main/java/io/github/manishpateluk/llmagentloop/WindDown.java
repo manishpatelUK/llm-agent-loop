@@ -1,7 +1,6 @@
 package io.github.manishpateluk.llmagentloop;
 
 import java.time.Duration;
-import java.util.Objects;
 
 /**
  * How a run winds down as it nears its limits ({@link AgentProfile#maxSteps()},
@@ -18,12 +17,18 @@ import java.util.Objects;
  * @param warnAtTimeFraction warn once this fraction of the time limit has passed, in {@code (0, 1]}
  * @param wrapUpTimeout      how long the final, tools-off call may take — on top of a time limit
  *                           that's already been reached. If it runs over or fails, the run ends with
- *                           its last response instead.
+ *                           its last response instead. {@code null} (the default) scales it with how
+ *                           much the call may write: see {@link #allowanceFor(int)}.
  */
 public record WindDown(int warnAtStepsLeft, double warnAtCostFraction, double warnAtTimeFraction, Duration wrapUpTimeout) {
 
-    /** Warn with 2 steps left, or at 80% of the cost or time limit; 60 s for the final answer. */
-    public static final WindDown DEFAULT = new WindDown(2, 0.8, 0.8, Duration.ofSeconds(60));
+    /** Warn with 2 steps left, or at 80% of the cost or time limit; time for the final answer to suit its length. */
+    public static final WindDown DEFAULT = new WindDown(2, 0.8, 0.8, null);
+
+    /** A scaled wrap-up allowance's fixed part, for the call to start answering. */
+    static final Duration WRAP_UP_BASE = Duration.ofSeconds(30);
+    /** A scaled wrap-up allowance gives the call this many output tokens a second: slow enough for slower models. */
+    static final int WRAP_UP_TOKENS_PER_SECOND = 40;
 
     public WindDown {
         if (warnAtStepsLeft < 0) {
@@ -33,8 +38,7 @@ public record WindDown(int warnAtStepsLeft, double warnAtCostFraction, double wa
             throw new IllegalArgumentException("warning fractions must be in (0, 1], were "
                     + warnAtCostFraction + " and " + warnAtTimeFraction);
         }
-        Objects.requireNonNull(wrapUpTimeout, "wrapUpTimeout");
-        if (wrapUpTimeout.isZero() || wrapUpTimeout.isNegative()) {
+        if (wrapUpTimeout != null && (wrapUpTimeout.isZero() || wrapUpTimeout.isNegative())) {
             throw new IllegalArgumentException("wrapUpTimeout must be positive, was " + wrapUpTimeout);
         }
     }
@@ -53,5 +57,17 @@ public record WindDown(int warnAtStepsLeft, double warnAtCostFraction, double wa
 
     public WindDown withWrapUpTimeout(Duration timeout) {
         return new WindDown(warnAtStepsLeft, warnAtCostFraction, warnAtTimeFraction, timeout);
+    }
+
+    /**
+     * How long a wrap-up call allowed {@code wrapUpTokens} of output may take: {@link #wrapUpTimeout()} when set,
+     * otherwise {@link #WRAP_UP_BASE} plus a second for every {@link #WRAP_UP_TOKENS_PER_SECOND} tokens, so a long
+     * answer (a whole report) isn't cut off by an allowance meant for a short one.
+     */
+    public Duration allowanceFor(int wrapUpTokens) {
+        if (wrapUpTimeout != null) {
+            return wrapUpTimeout;
+        }
+        return WRAP_UP_BASE.plusSeconds(Math.max(0, wrapUpTokens) / WRAP_UP_TOKENS_PER_SECOND);
     }
 }

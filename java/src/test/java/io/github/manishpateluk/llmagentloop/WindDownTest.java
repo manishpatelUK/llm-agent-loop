@@ -120,6 +120,31 @@ class WindDownTest {
         assertThat(result.execution().steps()).extracting(StepRecord::action).endsWith(StepAction.TRUNCATED);
     }
 
+    /**
+     * A sub-goal finished with the real work (a report), then the run carried on and reached its limit, and its
+     * wrap-up failed: the run ends with that answer, not with the preamble to its last tool call.
+     */
+    @Test
+    void ifTheWrapUpFailsAfterAStepFinishedWithAnAnswerTheRunEndsWithThatAnswer() {
+        String report = "# The Report\n\nEverything the sub-goal found, written up in full. ".repeat(5);
+        AgentLoop loop = model.loop().tools(digTool()).build();
+        model.respond(request -> {
+            if (request.getTools().isEmpty()) {
+                throw new IllegalStateException("provider down");
+            }
+            return switch (model.requests.size()) {
+                case 1 -> ScriptedModel.toolCall("s1", "spawn_sub_task", Map.of("goal", "write the report"));
+                case 2 -> ScriptedModel.toolCall("rc", "report_complete", Map.of("finalAnswer", report));
+                default -> ScriptedModel.textAndToolCall("Checking one more thing.", "d", "dig", Map.of());
+            };
+        });
+
+        AgentLoopResult result = loop.runAndWait(LoopRequest.builder().prompt("go").agentProfile(steps(4)));
+
+        assertThat(result.execution().terminationReason()).isEqualTo(TerminationReason.STEP_LIMIT_REACHED);
+        assertThat(result.finalResponse().getContent()).isEqualTo(report);
+    }
+
     @Test
     void theWrapUpCallHasItsOwnTimeAllowance() {
         AgentLoop loop = model.loop().tools(digTool()).build();
@@ -254,6 +279,18 @@ class WindDownTest {
         assertThatThrownBy(() -> WindDown.DEFAULT.withWrapUpTimeout(Duration.ZERO)).isInstanceOf(IllegalArgumentException.class);
         assertThat(LoopRequest.builder().prompt("x").onResult(r -> { }).onError(e -> { }).build().windDown())
                 .isEqualTo(WindDown.DEFAULT);
+    }
+
+    /** By default the wrap-up gets time to suit how much it may write; a set allowance is kept as it is. */
+    @Test
+    void theWrapUpAllowanceScalesWithItsOutputUnlessOneIsSet() {
+        assertThat(WindDown.DEFAULT.wrapUpTimeout()).isNull();
+        assertThat(WindDown.DEFAULT.allowanceFor(16_000)).isEqualTo(Duration.ofSeconds(430));
+        assertThat(WindDown.DEFAULT.allowanceFor(800)).isEqualTo(Duration.ofSeconds(50));
+        assertThat(WindDown.DEFAULT.allowanceFor(16_000))
+                .isGreaterThan(WindDown.DEFAULT.allowanceFor(HousekeepingLimits.DEFAULT.wrapUpTokens() / 4));
+        assertThat(WindDown.DEFAULT.withWrapUpTimeout(Duration.ofSeconds(90)).allowanceFor(16_000))
+                .isEqualTo(Duration.ofSeconds(90));
     }
 
     static long limitWarnings(Request request) {

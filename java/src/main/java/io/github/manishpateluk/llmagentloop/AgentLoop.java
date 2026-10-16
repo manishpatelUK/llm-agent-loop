@@ -578,6 +578,11 @@ public final class AgentLoop {
         /** provider/model pairs already warned about dropping attachments, so each warns once. */
         private final java.util.Set<String> attachmentDropWarnings = new java.util.HashSet<>();
         private Response lastResponse;
+        /**
+         * The latest answer a goal or step completed with. If the run then reaches a limit and its wrap-up fails, this
+         * is often the real work (a sub-goal's report), where the last response is only a preamble to a tool call.
+         */
+        private String lastGoalAnswer;
         /** This run's step, cost and time limits, linked to those of any run it's nested in; set when it starts executing. */
         private Limits limits;
         /** Which limits' warnings this run's model has been given, so each is given once. */
@@ -816,7 +821,7 @@ public final class AgentLoop {
                 failure = response.getStructuredOutput() != null && response.getStructuredOutput().get("needsPlan") instanceof Boolean
                         ? null
                         : unusableOutput(response, maxOutputTokens);
-            } catch (RuntimeException e) {
+            } catch (Exception e) {
                 rethrowIfRunEnding(e);
                 failure = describe(e);
             }
@@ -853,7 +858,7 @@ public final class AgentLoop {
             Response response;
             try {
                 response = call(0, req, false, UsagePurpose.PLAN);
-            } catch (RuntimeException e) {
+            } catch (Exception e) {
                 rethrowIfRunEnding(e);
                 return noPlan(describe(e), null);
             }
@@ -907,10 +912,20 @@ public final class AgentLoop {
          * A failed housekeeping call only warns, unless the failure is the run ending anyway:
          * cancellation, an interrupt, or a limit reached (which winds the run down).
          */
-        private void rethrowIfRunEnding(RuntimeException e) {
+        private void rethrowIfRunEnding(Exception e) {
             if (e instanceof Cancelled || e instanceof LimitReached || cancelled || interruptedBy(e)) {
-                throw e;
+                throw e instanceof RuntimeException runtime ? runtime : new Cancelled();
             }
+        }
+
+        /**
+         * Rethrows {@code e} unchanged, checked or not. Provider clients and tools written in Kotlin can throw checked
+         * exceptions (an {@link InterruptedException} while they wait) without declaring them, so the loop catches
+         * {@code Exception} where a failure must not end the run, and passes on the ones it doesn't handle as they are.
+         */
+        @SuppressWarnings("unchecked")
+        private static <T extends Throwable> RuntimeException sneakyThrow(Throwable e) throws T {
+            throw (T) e;
         }
 
         /**
@@ -981,6 +996,7 @@ public final class AgentLoop {
                             complete.get().getArguments().getOrDefault("finalAnswer", response.getContent()));
                     emit(thread, MessageType.INFO, "Goal complete.");
                     recordStep(thread, StepAction.COMPLETE, goal, null, null, finalAnswer, response);
+                    rememberGoalAnswer(finalAnswer);
                     history.add(Message.assistant("Completed: " + goal + "\n\n" + finalAnswer));
                     frames.removeLast();
                     return new StepOutcome(finalAnswer, response);
@@ -1023,6 +1039,7 @@ public final class AgentLoop {
                 String answer = response.getContent() == null ? "" : response.getContent();
                 emit(thread, MessageType.INFO, "Goal complete.");
                 recordStep(thread, StepAction.COMPLETE, goal, null, null, answer, response);
+                rememberGoalAnswer(answer);
                 history.add(Message.assistant("Completed: " + goal + "\n\n" + answer));
                 frames.removeLast();
                 return new StepOutcome(answer, response);
@@ -1175,8 +1192,8 @@ public final class AgentLoop {
                 return "Error: " + e.getMessage();
             } catch (LimitReached | Cancelled control) {
                 throw control;
-            } catch (RuntimeException e) {
-                // Anything else the handler threw: the model hears about it and the run carries on.
+            } catch (Exception e) {
+                // Anything else the handler threw, checked or not: the model hears about it and the run carries on.
                 if (cancelled || interruptedBy(e)) {
                     throw new Cancelled();
                 }
@@ -1191,7 +1208,7 @@ public final class AgentLoop {
         }
 
         /** {@code "<exception class>: <message>"} for the model — never a stack trace, and the message capped. */
-        private static String describeFailure(RuntimeException e) {
+        private static String describeFailure(Exception e) {
             String type = e.getClass().getSimpleName().isEmpty() ? e.getClass().getName() : e.getClass().getSimpleName();
             String message = e.getMessage() == null ? "" : e.getMessage().strip();
             if (message.length() > MAX_FAILURE_MESSAGE_CHARS) {
@@ -1236,9 +1253,12 @@ public final class AgentLoop {
                 if (finished.compareAndSet(false, true)) {
                     return result;
                 }
-            } catch (RuntimeException e) {
+            } catch (Exception e) {
+                // Exception, not RuntimeException: a tool interrupted while it waits can throw the checked
+                // InterruptedException undeclared. Only the tool's own failures are passed on; our watchdog's
+                // interrupt falls through to the timeout below.
                 if (finished.compareAndSet(false, true)) {
-                    throw e;
+                    throw sneakyThrow(e);
                 }
             } finally {
                 watchdog.interrupt();
@@ -1525,8 +1545,8 @@ public final class AgentLoop {
                 return;
             }
             if (answer == null) {
-                Response truncated = partialResponse(lastResponse,
-                        "Stopped at the " + limits.name(reason) + " before producing a final answer.");
+                Response truncated = bestGathered(partialResponse(lastResponse,
+                        "Stopped at the " + limits.name(reason) + " before producing a final answer."));
                 recordStep(thread, StepAction.TRUNCATED, limits.name(reason) + " reached", null, null, truncated.getContent(), lastResponse);
                 complete(truncated, reason, false);
                 return;
@@ -1549,7 +1569,7 @@ public final class AgentLoop {
                     .maxOutputTokens(request.housekeepingLimits().wrapUpTokens())
                     .build();
 
-            Duration allowance = request.windDown().wrapUpTimeout();
+            Duration allowance = request.windDown().allowanceFor(request.housekeepingLimits().wrapUpTokens());
             Thread self = Thread.currentThread();
             AtomicBoolean finished = new AtomicBoolean();
             Thread watchdog = Thread.ofVirtual().start(() -> {
@@ -1699,7 +1719,7 @@ public final class AgentLoop {
                 return response.getStructuredOutput();
             } catch (Cancelled e) {
                 return null;
-            } catch (RuntimeException e) {
+            } catch (Exception e) {
                 emit(0, MessageType.WARNING, "Couldn't turn the answer into the requested structure (" + e.getMessage()
                         + "); structuredAnswer is null.");
                 return null;
@@ -1749,7 +1769,7 @@ public final class AgentLoop {
                 emit(0, MessageType.WARNING, "The conversation store doesn't support replace(), so long conversations can't be compacted.");
             } catch (Cancelled e) {
                 // cancelled while compacting: leave the conversation as it was
-            } catch (RuntimeException e) {
+            } catch (Exception e) {
                 emit(0, MessageType.WARNING, "Couldn't compact the conversation (" + e.getMessage() + "); it was left as it was.");
             }
         }
@@ -1770,6 +1790,25 @@ public final class AgentLoop {
             Response response = router.complete(req);
             meter(UsagePurpose.CONVERSATION_COMPACTION, response);
             return response.getContent() == null ? "" : response.getContent();
+        }
+
+        private void rememberGoalAnswer(String answer) {
+            if (answer != null && !answer.isBlank()) {
+                lastGoalAnswer = answer;
+            }
+        }
+
+        /**
+         * When a run ends at a limit without a wrap-up: the latest completed goal's answer if it is longer than the last
+         * response, which is then usually only a preamble to a tool call; otherwise the last response.
+         */
+        private Response bestGathered(Response last) {
+            String content = last.getContent() == null ? "" : last.getContent();
+            if (lastGoalAnswer == null || lastGoalAnswer.length() <= content.length()) {
+                return last;
+            }
+            emit(currentThread, MessageType.WARNING, "Ending with the latest completed step's answer.");
+            return last.toBuilder().content(lastGoalAnswer).build();
         }
 
         /** The best-effort "result as is" when a run stops early: the last response's own content, if any. */

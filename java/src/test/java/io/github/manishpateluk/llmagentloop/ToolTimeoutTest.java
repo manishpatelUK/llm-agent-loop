@@ -107,6 +107,47 @@ class ToolTimeoutTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    /** A tool built on a Kotlin client throws the checked InterruptedException itself, undeclared, when timed out. */
+    @Test
+    void aToolInterruptedAtItsTimeoutThatThrowsInterruptedExceptionStillTimesOutCleanly() {
+        AgentLoop loop = model.loop().toolTimeout(Duration.ofMillis(100))
+                .tools(new ToolRegistry().register(new RegisteredTool(definition("hang"), (args, context) -> {
+                    try {
+                        Thread.sleep(60_000);
+                    } catch (InterruptedException e) {
+                        throw ToolTimeoutTest.<RuntimeException>sneaky(e);
+                    }
+                    return "finished";
+                }))).build();
+        model.respond(request -> lastToolResult(request) == null ? toolCall("h", "hang", Map.of()) : complete("worked around it"));
+
+        AgentLoopResult result = loop.runAndWait(LoopRequest.builder().prompt("go").agentProfile(RECURSIVE));
+
+        assertThat(lastToolResult(model.requests.get(1))).startsWith("Error: hang didn't finish within 100 ms");
+        assertThat(result.finalResponse().getContent()).isEqualTo("worked around it");
+        assertThat(Thread.currentThread().isInterrupted()).isFalse();
+    }
+
+    /** A checked exception a tool throws undeclared is a tool failure the model hears about, not the run's end. */
+    @Test
+    void aToolThrowingAnUndeclaredCheckedExceptionIsReportedToTheModel() {
+        AgentLoop loop = model.loop().toolTimeout(Duration.ofSeconds(5))
+                .tools(new ToolRegistry().register(definition("fetch"), (args, context) -> {
+                    throw ToolTimeoutTest.<RuntimeException>sneaky(new java.io.IOException("connection reset"));
+                })).build();
+        model.respond(request -> lastToolResult(request) == null ? toolCall("f", "fetch", Map.of()) : complete("carried on"));
+
+        AgentLoopResult result = loop.runAndWait(LoopRequest.builder().prompt("go").agentProfile(RECURSIVE));
+
+        assertThat(lastToolResult(model.requests.get(1))).contains("fetch failed").contains("connection reset");
+        assertThat(result.finalResponse().getContent()).isEqualTo("carried on");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> T sneaky(Throwable t) throws T {
+        throw (T) t;
+    }
+
     private static ToolHandler sleeping(long millis, AtomicBoolean interrupted) {
         return (args, context) -> {
             try {

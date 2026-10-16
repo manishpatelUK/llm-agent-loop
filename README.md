@@ -119,10 +119,18 @@ Implemented so far (Java):
     default 2 steps left, or 80% of the cost or time budget) the next model call gets a one-time
     note saying which limit, how much is left, and to stop gathering and answer; at the limit, one
     final tools-off call (not counted as a step, but metered, with its own time allowance) asks for
-    the best complete answer from everything gathered. The run returns that answer via `onResult` —
+    the best complete answer from everything gathered. The allowance defaults to 30 s plus a second
+    for every 40 tokens the call may write (`WindDown.allowanceFor`), so a long answer isn't cut off;
+    `WindDown.withWrapUpTimeout` sets a fixed one. The run returns that answer via `onResult` —
     not `onError` — with `Execution.terminationReason()` `STEP_LIMIT_REACHED` /
     `COST_LIMIT_REACHED` / `TIME_LIMIT_REACHED`, so callers can tell it from a normal `COMPLETED`
-    answer; if the wrap-up call fails, the run ends with the same reason and its last response.
+    answer; if the wrap-up call fails or overruns, the run ends with the same reason and its last
+    response, or the latest completed step's answer when that is longer (the real work, where the
+    last response is often only a preamble to a tool call).
+  - Provider clients and tools can throw checked exceptions without declaring them (Kotlin code
+    does: an `InterruptedException` while it waits between retries). The loop treats them like any
+    other failure: a tool's is reported to the model, a timed-out tool or wrap-up ends as a timeout,
+    and a failed plan, structured answer or compaction only warns.
     Limits are checked between model calls (met "at or after", never exact) and apply across the
     whole run: plan steps, sub-tasks and delegated agents all count toward them, and reaching one
     anywhere unwinds to the top level, which winds down once.
