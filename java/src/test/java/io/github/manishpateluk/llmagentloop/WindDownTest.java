@@ -141,6 +141,40 @@ class WindDownTest {
         assertThat(Thread.currentThread().isInterrupted()).isFalse();
     }
 
+    /**
+     * A provider client interrupted while it waits (the Anthropic Java client between retries) throws the checked
+     * {@link InterruptedException} itself, undeclared. The wrap-up's own watchdog caused it, so the run still ends
+     * with its last response rather than failing.
+     */
+    @Test
+    void aWrapUpInterruptedByItsOwnAllowanceEndsTheRunEvenWhenTheClientThrowsInterruptedException() {
+        AgentLoop loop = model.loop().tools(digTool()).build();
+        model.respond(request -> {
+            if (request.getTools().isEmpty()) {
+                try {
+                    Thread.sleep(30_000);
+                } catch (InterruptedException e) {
+                    throw WindDownTest.<RuntimeException>sneaky(e);
+                }
+                return text("too late");
+            }
+            return ScriptedModel.textAndToolCall("Still digging.", "d", "dig", Map.of());
+        });
+
+        AgentLoopResult result = loop.runAndWait(LoopRequest.builder().prompt("go").agentProfile(steps(1))
+                .windDown(WindDown.DEFAULT.withWrapUpTimeout(Duration.ofMillis(200))));
+
+        assertThat(result.execution().terminationReason()).isEqualTo(TerminationReason.STEP_LIMIT_REACHED);
+        assertThat(result.finalResponse().getContent()).isEqualTo("Still digging.");
+        assertThat(Thread.currentThread().isInterrupted()).isFalse();
+    }
+
+    /** Throws a checked exception without declaring it, as Kotlin code can. */
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> T sneaky(Throwable t) throws T {
+        throw (T) t;
+    }
+
     @Test
     void aWrappedUpAnswerGetsTheRunsStructuredAnswerToo() {
         AgentLoop loop = model.loop().tools(digTool()).build();

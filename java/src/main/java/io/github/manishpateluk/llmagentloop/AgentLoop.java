@@ -1574,7 +1574,9 @@ public final class AgentLoop {
                 } else {
                     failure = null;
                 }
-            } catch (RuntimeException e) {
+            } catch (Exception e) {
+                // Exception, not RuntimeException: a provider client interrupted while it waits can throw the
+                // checked InterruptedException undeclared (the Anthropic Java client does, between retries).
                 if (!finished.compareAndSet(false, true)) {
                     failure = null; // our watchdog's interrupt
                 } else if (cancelled || interruptedBy(e)) {
