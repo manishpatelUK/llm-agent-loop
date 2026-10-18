@@ -2,6 +2,8 @@ package io.github.manishpateluk.llmagentloop.agent;
 
 import io.github.manishpateluk.llmagentloop.AgentLoop;
 import io.github.manishpateluk.llmagentloop.AgentLoopResult;
+import io.github.manishpateluk.llmagentloop.AnswerFormatting;
+import io.github.manishpateluk.llmagentloop.HousekeepingLimits;
 import io.github.manishpateluk.llmagentloop.LoopRequest;
 import io.github.manishpateluk.llmagentloop.RunHandle;
 import io.github.manishpateluk.llmagentloop.Scope;
@@ -11,6 +13,7 @@ import io.github.manishpateluk.llmagentloop.tool.ToolContext;
 import io.github.manishpateluk.llmagentloop.tool.ToolRegistry;
 import io.github.manishpateluk.llmagentloop.tool.builtin.AgentDelegate;
 import io.github.manishpateluk.llmagentloop.tool.builtin.DelegationTools;
+import io.github.manishpateluk.llmrouter.config.RouterConfig;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -91,6 +94,15 @@ public final class AgentRuntime {
     /** {@link #runAndWait(Agent, String, Scope)} with full control over the request; callbacks on the builder are replaced. */
     public AgentLoopResult runAndWait(Agent agent, LoopRequest.LoopRequestBuilder request) {
         return loopFor(agent).runAndWait(request.agentProfile(agent.profile()));
+    }
+
+    /**
+     * Converts an answer a run of this runtime already wrote into {@code schema} data, without running anything
+     * again — see {@link AgentLoop#formatAnswer}. On the base loop's router and usage meter.
+     */
+    public AgentLoop.FormattedAnswer formatAnswer(String answer, Map<String, Object> schema, RouterConfig routerConfig,
+            AnswerFormatting formatting, HousekeepingLimits housekeepingLimits, Scope scope) {
+        return base.formatAnswer(answer, schema, routerConfig, formatting, housekeepingLimits, scope);
     }
 
     /**

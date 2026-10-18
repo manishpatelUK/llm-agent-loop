@@ -249,6 +249,53 @@ public final class AgentLoop {
         return settings.semanticSearch();
     }
 
+    /**
+     * Turns an answer a run already wrote into {@code schema} data without running anything again: for a caller that
+     * kept the text of a run whose conversion failed ({@code AgentLoopResult.finalResponse()} with a {@code null}
+     * {@code structuredAnswer()}), so a retry costs only the conversion, not the run's work. Goes through
+     * {@code formatting}'s steps as a run does, on {@code routerConfig} (the run's routing; {@code null} for the
+     * default), with output capped at {@code housekeepingLimits.answerFormattingTokens()}. Every call is recorded with
+     * this loop's {@link UsageMeter} (purpose {@code ANSWER_FORMATTING}) under {@code scope}, and totalled in the
+     * result.
+     *
+     * @param schema an {@code object} schema, as {@link LoopRequest#answerSchema()}
+     * @param scope  whose usage this is ({@code null}: a private scope, as a run without one)
+     * @return the data ({@code null} when every step failed) and what the calls cost
+     */
+    public FormattedAnswer formatAnswer(String answer, Map<String, Object> schema, RouterConfig routerConfig,
+            AnswerFormatting formatting, HousekeepingLimits housekeepingLimits, Scope scope) {
+        Objects.requireNonNull(schema, "schema");
+        if (!"object".equals(schema.get("type"))) {
+            throw new IllegalArgumentException("schema's top level must be {\"type\": \"object\", ...}");
+        }
+        UUID executionId = UUID.randomUUID();
+        Scope usageScope = scope != null ? scope : Scope.ephemeral(executionId);
+        AtomicReference<UsageTotals> usage = new AtomicReference<>(UsageTotals.ZERO);
+        Map<String, Object> data = AnswerFormatter.format(router, answer, schema, routerConfig,
+                formatting == null ? AnswerFormatting.STEP_DOWN : formatting,
+                (housekeepingLimits == null ? HousekeepingLimits.DEFAULT : housekeepingLimits).answerFormattingTokens(),
+                () -> { }, AnswerFormatter.metering(response -> {
+                    Usage used = response.getUsage();
+                    UsageRecord record = new UsageRecord(executionId, usageScope, UsagePurpose.ANSWER_FORMATTING,
+                            response.getProviderUsed(), response.getModelUsed(),
+                            used == null ? 0 : used.getInputTokens(), used == null ? 0 : used.getOutputTokens(),
+                            used == null ? 0 : used.getEstimatedCostUsdCents(),
+                            used == null ? 0 : used.getEstimatedCostUsdMicros(), Instant.now());
+                    usage.updateAndGet(totals -> totals.plus(record));
+                    settings.usageMeter().record(record);
+                }));
+        return new FormattedAnswer(data, usage.get());
+    }
+
+    /**
+     * What {@link #formatAnswer} gives back.
+     *
+     * @param data  the answer as schema data; {@code null} when every step failed
+     * @param usage what the conversion calls cost
+     */
+    public record FormattedAnswer(Map<String, Object> data, UsageTotals usage) {
+    }
+
     /** See {@link Builder}. */
     public static Builder builder() {
         return new Builder();
@@ -898,10 +945,7 @@ public final class AgentLoop {
 
         /** Why a structured-output reply can't be used: cut off at {@code maxOutputTokens}, or simply no usable output. */
         private static String unusableOutput(Response response, int maxOutputTokens) {
-            Usage usage = response.getUsage();
-            return usage != null && usage.getOutputTokens() >= maxOutputTokens
-                    ? "the reply was cut off at its " + maxOutputTokens + "-token output limit"
-                    : "the reply had no usable structured output";
+            return AnswerFormatter.unusable(response, maxOutputTokens);
         }
 
         private static String describe(Throwable e) {
@@ -1696,27 +1740,31 @@ public final class AgentLoop {
         }
 
         /**
-         * One extra call converting the finished answer into data matching {@link LoopRequest#answerSchema()}.
-         * Post-processing, so it doesn't count toward {@code maxSteps}; its usage is metered. A failure
-         * leaves the structured answer {@code null} with a warning rather than failing a finished run.
+         * Converts the finished answer into data matching {@link LoopRequest#answerSchema()}, through the steps of
+         * {@link LoopRequest#answerFormatting()}: one call each, on the same answer text, until one gives usable
+         * data. Post-processing, so it doesn't count toward {@code maxSteps}; every call is metered. A step that
+         * fails warns and the next is tried; when all fail the structured answer is {@code null}, with a warning,
+         * rather than failing a finished run.
          */
         private Map<String, Object> structuredAnswer(String answer) {
             try {
-                checkCancelled();
-                Request req = Request.builder()
-                        .prompt("Express the answer below as JSON matching the response schema. Use only information "
-                                + "in the answer; use null for anything it doesn't say.\n\nAnswer:\n" + (answer == null ? "" : answer))
-                        .responseSchema(request.answerSchema())
-                        .config(routerConfig)
-                        .maxOutputTokens(request.housekeepingLimits().answerFormattingTokens())
-                        .build();
-                Response response = router.complete(req);
-                meter(UsagePurpose.ANSWER_FORMATTING, response);
-                if (response.getStructuredOutput() == null) {
-                    emit(0, MessageType.WARNING, "Couldn't turn the answer into the requested structure ("
-                            + unusableOutput(response, req.getMaxOutputTokens()) + "); structuredAnswer is null.");
-                }
-                return response.getStructuredOutput();
+                return AnswerFormatter.format(router, answer, request.answerSchema(), routerConfig,
+                        request.answerFormatting(), request.housekeepingLimits().answerFormattingTokens(),
+                        this::checkCancelled, new AnswerFormatter.Listener() {
+                            @Override
+                            public void onResponse(Response response) {
+                                meter(UsagePurpose.ANSWER_FORMATTING, response);
+                            }
+
+                            @Override
+                            public void onFailedStep(AnswerFormatting.Step step, String reason,
+                                    AnswerFormatting.Step next) {
+                                emit(0, MessageType.WARNING, "Couldn't turn the answer into the requested structure"
+                                        + " with " + AnswerFormatter.describe(step) + " (" + reason + "); "
+                                        + (next == null ? "structuredAnswer is null."
+                                                : "trying " + AnswerFormatter.describe(next) + "."));
+                            }
+                        });
             } catch (Cancelled e) {
                 return null;
             } catch (Exception e) {

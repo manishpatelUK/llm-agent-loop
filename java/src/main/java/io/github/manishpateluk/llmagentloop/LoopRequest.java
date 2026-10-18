@@ -66,6 +66,11 @@ import java.util.function.UnaryOperator;
  *                        the result is {@code AgentLoopResult.structuredAnswer()}; the text answer is
  *                        still produced (and streamed) as usual. The schema's top level must be an
  *                        {@code object}.
+ * @param answerFormatting optional; the steps tried to turn the answer into {@code answerSchema} data
+ *                        until one gives usable data, each converting the same answer text so the run's
+ *                        work is never redone — see {@link AnswerFormatting}. Defaults to
+ *                        {@link AnswerFormatting#STEP_DOWN}: the run's own routing, then low thinking,
+ *                        then a cheaper model.
  * @param onResult        required — called once with the final {@link AgentLoopResult}
  * @param onError         required — called once if the run fails
  * @param onMessage       optional status-update callback; defaults to a no-op
@@ -113,6 +118,7 @@ public record LoopRequest(
         RouterConfig routerConfig,
         UnaryOperator<RouterConfig> routerConfigAdjuster,
         Map<String, Object> answerSchema,
+        AnswerFormatting answerFormatting,
         Consumer<AgentLoopResult> onResult,
         Consumer<Throwable> onError,
         Consumer<AgentMessage> onMessage,
@@ -144,6 +150,7 @@ public record LoopRequest(
             throw new IllegalArgumentException("answerSchema's top level must be {\"type\": \"object\", ...}");
         }
         answerSchema = answerSchema == null ? null : Map.copyOf(answerSchema);
+        answerFormatting = answerFormatting == null ? AnswerFormatting.STEP_DOWN : answerFormatting;
         onMessage = onMessage == null ? message -> { } : onMessage;
         onUnregisteredTool = onUnregisteredTool == null ? UnregisteredToolHandler.NONE : onUnregisteredTool;
         if (maxCostUsdCents != null && maxCostUsdCents <= 0) {

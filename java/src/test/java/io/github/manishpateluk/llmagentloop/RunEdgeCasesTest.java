@@ -145,7 +145,7 @@ class RunEdgeCasesTest {
         assertThat(run.answer()).isEqualTo("Revenue was 12.");
         assertThat(run.result().structuredAnswer()).isNull();
         assertThat(run.messages(MessageType.WARNING))
-                .anySatisfy(warning -> assertThat(warning).startsWith("Couldn't turn the answer into the requested structure (")
+                .anySatisfy(warning -> assertThat(warning).startsWith("Couldn't turn the answer into the requested structure with a cheaper model (")
                         .contains("structuredAnswer is null"));
     }
 
