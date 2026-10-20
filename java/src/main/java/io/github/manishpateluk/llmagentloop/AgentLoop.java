@@ -264,7 +264,17 @@ public final class AgentLoop {
      */
     public FormattedAnswer formatAnswer(String answer, Map<String, Object> schema, RouterConfig routerConfig,
             AnswerFormatting formatting, HousekeepingLimits housekeepingLimits, Scope scope) {
+        return formatAnswer(answer, schema, routerConfig, formatting, housekeepingLimits, scope, Map.of());
+    }
+
+    /**
+     * {@link #formatAnswer(String, Map, RouterConfig, AnswerFormatting, HousekeepingLimits, Scope)}, with {@code tags}
+     * copied onto the calls it meters, as a run's {@code LoopRequest.tags} are.
+     */
+    public FormattedAnswer formatAnswer(String answer, Map<String, Object> schema, RouterConfig routerConfig,
+            AnswerFormatting formatting, HousekeepingLimits housekeepingLimits, Scope scope, Map<String, String> tags) {
         Objects.requireNonNull(schema, "schema");
+        Map<String, String> usageTags = tags == null ? Map.of() : Map.copyOf(tags);
         if (!"object".equals(schema.get("type"))) {
             throw new IllegalArgumentException("schema's top level must be {\"type\": \"object\", ...}");
         }
@@ -280,7 +290,7 @@ public final class AgentLoop {
                             response.getProviderUsed(), response.getModelUsed(),
                             used == null ? 0 : used.getInputTokens(), used == null ? 0 : used.getOutputTokens(),
                             used == null ? 0 : used.getEstimatedCostUsdCents(),
-                            used == null ? 0 : used.getEstimatedCostUsdMicros(), Instant.now());
+                            used == null ? 0 : used.getEstimatedCostUsdMicros(), Instant.now(), usageTags);
                     usage.updateAndGet(totals -> totals.plus(record));
                     settings.usageMeter().record(record);
                 }));
@@ -1368,6 +1378,11 @@ public final class AgentLoop {
                 public java.util.function.UnaryOperator<RouterConfig> routerConfigAdjuster() {
                     return request.routerConfigAdjuster();
                 }
+
+                @Override
+                public Map<String, String> tags() {
+                    return request.tags();
+                }
             });
         }
 
@@ -1439,7 +1454,7 @@ public final class AgentLoop {
             UsageRecord record = new UsageRecord(executionId, scope, purpose, response.getProviderUsed(), response.getModelUsed(),
                     usage == null ? 0 : usage.getInputTokens(), usage == null ? 0 : usage.getOutputTokens(),
                     usage == null ? 0 : usage.getEstimatedCostUsdCents(), usage == null ? 0 : usage.getEstimatedCostUsdMicros(),
-                    Instant.now());
+                    Instant.now(), request.tags());
             addUsage(record);
             settings.usageMeter().record(record);
         }

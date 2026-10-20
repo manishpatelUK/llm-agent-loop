@@ -57,6 +57,36 @@ class UsageMeteringTest {
         assertThat(meter.totals(ALICE)).isEqualTo(UsageTotals.ZERO);
     }
 
+    /** Tags say who to bill and why: every call a run meters carries them, its delegated runs' calls included. */
+    @Test
+    void aRunsTagsAreOnEveryCallItMetersIncludingItsDelegatesCalls() {
+        List<UsageRecord> records = new CopyOnWriteArrayList<>();
+        AgentLoop specialist = model.loop().usageMeter(records::add).build();
+        AgentLoop assistant = model.loop().usageMeter(records::add)
+                .tools(new io.github.manishpateluk.llmagentloop.tool.ToolRegistry().register(
+                        io.github.manishpateluk.llmagentloop.tool.builtin.DelegationTools.delegateToAgent(List.of(
+                                io.github.manishpateluk.llmagentloop.tool.builtin.AgentDelegate.of("finance",
+                                        "Finance specialist", specialist, RECURSIVE)))))
+                .build();
+        model.respond(request -> {
+            if ("Check the runway".equals(request.getPrompt())) {
+                return withUsage(text("Nine months."), 10, 2);
+            }
+            return ScriptedModel.lastToolResult(request) == null
+                    ? withUsage(ScriptedModel.toolCall("d1", "delegate_to_agent",
+                            java.util.Map.of("agent", "finance", "task", "Check the runway")), 20, 4)
+                    : withUsage(text("Your runway is nine months."), 30, 6);
+        });
+        java.util.Map<String, String> tags = java.util.Map.of("company", "c1", "origin", "founder_asked");
+
+        assistant.runAndWait(LoopRequest.builder().prompt("How long is our runway?").scope(ALICE).tags(tags)
+                .agentProfile(RECURSIVE));
+
+        assertThat(records).hasSize(3).allSatisfy(r -> assertThat(r.tags()).isEqualTo(tags));
+        assertThat(new UsageRecord(null, ALICE, UsagePurpose.STEP, null, null, 0, 0, 0, 0, java.time.Instant.now())
+                .tags()).isEmpty();
+    }
+
     @Test
     void eachRunReportsItsOwnUsage() {
         AgentLoop loop = model.loop().build();

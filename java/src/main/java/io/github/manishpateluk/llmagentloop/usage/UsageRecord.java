@@ -4,6 +4,7 @@ import io.github.manishpateluk.llmagentloop.Scope;
 import io.github.manishpateluk.llmrouter.provider.Provider;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -23,13 +24,24 @@ import java.util.UUID;
  * @param costUsdMicros the same estimate in micro-dollars (millionths of a dollar): sum this one
  *                     for spend across many calls
  * @param at           when the call completed
+ * @param tags         the run's {@code LoopRequest.tags} (who to bill and why), inherited by its delegated runs;
+ *                     empty when it has none
  */
 public record UsageRecord(UUID executionId, Scope scope, UsagePurpose purpose, Provider provider, String model,
-                          long inputTokens, long outputTokens, long costUsdCents, long costUsdMicros, Instant at) {
+                          long inputTokens, long outputTokens, long costUsdCents, long costUsdMicros, Instant at,
+                          Map<String, String> tags) {
 
     public UsageRecord {
         Objects.requireNonNull(scope, "scope");
         Objects.requireNonNull(purpose, "purpose");
         Objects.requireNonNull(at, "at");
+        tags = tags == null ? Map.of() : Map.copyOf(tags);
+    }
+
+    /** A record without tags. */
+    public UsageRecord(UUID executionId, Scope scope, UsagePurpose purpose, Provider provider, String model,
+                       long inputTokens, long outputTokens, long costUsdCents, long costUsdMicros, Instant at) {
+        this(executionId, scope, purpose, provider, model, inputTokens, outputTokens, costUsdCents, costUsdMicros, at,
+                Map.of());
     }
 }

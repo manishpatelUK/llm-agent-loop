@@ -105,6 +105,12 @@ public final class AgentRuntime {
         return base.formatAnswer(answer, schema, routerConfig, formatting, housekeepingLimits, scope);
     }
 
+    /** {@link #formatAnswer(String, Map, RouterConfig, AnswerFormatting, HousekeepingLimits, Scope)} with usage tags. */
+    public AgentLoop.FormattedAnswer formatAnswer(String answer, Map<String, Object> schema, RouterConfig routerConfig,
+            AnswerFormatting formatting, HousekeepingLimits housekeepingLimits, Scope scope, Map<String, String> tags) {
+        return base.formatAnswer(answer, schema, routerConfig, formatting, housekeepingLimits, scope, tags);
+    }
+
     /**
      * {@code agent} as something other agents (or your own tools) can delegate to. Delegated runs
      * inherit the delegating run's {@code LoopRequest.operatingContext}; see {@link #delegate(Agent, boolean)}.

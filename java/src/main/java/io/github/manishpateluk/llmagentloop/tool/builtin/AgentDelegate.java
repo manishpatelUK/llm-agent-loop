@@ -87,6 +87,7 @@ public interface AgentDelegate {
                         .routerConfigAdjuster(context.routerConfigAdjuster())
                         .operatingContext(inheritOperatingContext ? context.operatingContext() : null)
                         .scope(context.scope())
+                        .tags(context.tags())
                         .onMessage(message -> context.report(message.type(), "[" + name + "] " + message.message())));
                 String answer = result.finalResponse().getContent();
                 TerminationReason reason = result.execution().terminationReason();

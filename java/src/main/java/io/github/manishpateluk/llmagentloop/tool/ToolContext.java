@@ -76,6 +76,11 @@ public record ToolContext(
             return null;
         }
 
+        /** The run's {@code LoopRequest.tags}; none if it has none. */
+        default Map<String, String> tags() {
+            return Map.of();
+        }
+
         /** The run's tool state behind {@link ToolContext#runState}; a context without a run gets a fresh, unshared map. */
         default Map<String, Object> state() {
             return new ConcurrentHashMap<>();
@@ -149,6 +154,11 @@ public record ToolContext(
     /** The run's {@code LoopRequest.routerConfigAdjuster}, or {@code null}: {@code AgentDelegate.of} passes it on to delegates. */
     public UnaryOperator<RouterConfig> routerConfigAdjuster() {
         return run.routerConfigAdjuster();
+    }
+
+    /** The run's {@code LoopRequest.tags}: {@code AgentDelegate.of} passes them on to delegates, so their usage is billed alike. */
+    public Map<String, String> tags() {
+        return run.tags();
     }
 
     /**
