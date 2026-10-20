@@ -258,7 +258,7 @@ See [ROADMAP.md](ROADMAP.md) for what's planned next.
 ## Structure
 
 - [`java/`](java/) — Java implementation (Java 25+), built with Maven, depending on
-  [`llm-router`](https://github.com/manishpatelUK/llm-router) 1.0.8+ from Maven Central, Jackson 3
+  [`llm-router`](https://github.com/manishpatelUK/llm-router) 1.0.12+ from Maven Central, Jackson 3
   (`tools.jackson.*`) for its own JSON handling, jsoup (HTML to text for `web_fetch`), Apache
   POI (spreadsheets, Word/PowerPoint reading) and PDFBox (PDF reading), with their logging bridged
   to SLF4J. All permissively licensed (MIT/Apache 2.0).
