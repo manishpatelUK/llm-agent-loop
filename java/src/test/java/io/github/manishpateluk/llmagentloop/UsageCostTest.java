@@ -192,7 +192,7 @@ class UsageCostTest {
         // 0.3 cents a call: after 3 calls (0.9 cents) the 80% mark is passed, so the 4th call is warned;
         // it takes the run past 1 cent, and the 5th call is the tools-off wrap-up.
         assertThat(model.requests()).extracting(WindDownTest::limitWarnings).containsExactly(0L, 0L, 0L, 1L, 0L);
-        assertThat(model.requests().get(3).getHistory().getLast().getContent())
+        assertThat(model.requests().get(3).getPrompt())
                 .contains("about $0.00 of the $0.01 cost limit left");
         assertThat(model.requests().getLast().getTools()).isEmpty();
         assertThat(run.result().execution().terminationReason()).isEqualTo(TerminationReason.COST_LIMIT_REACHED);

@@ -159,21 +159,29 @@ public final class AgentLoop {
     /** Text attachments up to this many characters are included in the model's context directly. */
     static final int MAX_INLINE_ATTACHMENT_CHARS = 50_000;
 
-    /** At most this many workspace files shown to the model ({@code ToolContext.showToModel}) at once; the oldest drops off. */
+    /**
+     * At most this many workspace files shown to the model ({@code ToolContext.showToModel}) in one step; the
+     * earliest of more drop off. Shown files join the conversation, so ones shown in earlier steps stay visible.
+     */
     static final int MAX_SHOWN_FILES = 10;
+
+    /** Ends the prompt of every working step after the first; the goal itself is in the conversation, once. */
+    static final String CONTINUE_PROMPT = "Continue working toward the latest goal above.";
 
     /** Everything about a loop except its router and tools — shared by {@link #withTools}. */
     private record Settings(
             MemoryStore memory, ScopeLevel memoryLevel, Workspace workspace, ScopeLevel workspaceLevel,
             WorkspaceLimits workspaceLimits, ConversationStore conversations, List<ToolInterceptor> interceptors,
             Duration toolTimeout, UsageMeter usageMeter, ConversationCompaction compaction,
-            boolean labelUntrustedContent, ContentScreener contentScreener, SemanticSearch semanticSearch) {
+            boolean labelUntrustedContent, ContentScreener contentScreener, SemanticSearch semanticSearch,
+            UntrustedMarkers untrustedMarkers) {
 
         /** Defaults, with a fresh {@link InMemoryUsageMeter} — so metering is on unless switched off. */
         static Settings defaults() {
             return new Settings(MemoryStore.NONE, ScopeLevel.USER, Workspace.NONE, ScopeLevel.USER,
                     WorkspaceLimits.DEFAULT, ConversationStore.NONE, List.of(), DEFAULT_TOOL_TIMEOUT,
-                    new InMemoryUsageMeter(), ConversationCompaction.DEFAULT, true, ContentScreener.NONE, null);
+                    new InMemoryUsageMeter(), ConversationCompaction.DEFAULT, true, ContentScreener.NONE, null,
+                    UntrustedMarkers.random());
         }
 
         Settings {
@@ -188,6 +196,7 @@ public final class AgentLoop {
             Objects.requireNonNull(usageMeter, "usageMeter");
             Objects.requireNonNull(compaction, "compaction");
             Objects.requireNonNull(contentScreener, "contentScreener");
+            Objects.requireNonNull(untrustedMarkers, "untrustedMarkers");
         }
     }
 
@@ -210,7 +219,7 @@ public final class AgentLoop {
     private static Settings withMemory(Settings d, MemoryStore memory) {
         return new Settings(memory, d.memoryLevel(), d.workspace(), d.workspaceLevel(), d.workspaceLimits(),
                 d.conversations(), d.interceptors(), d.toolTimeout(), d.usageMeter(), d.compaction(),
-                d.labelUntrustedContent(), d.contentScreener(), d.semanticSearch());
+                d.labelUntrustedContent(), d.contentScreener(), d.semanticSearch(), d.untrustedMarkers());
     }
 
     private AgentLoop(LlmRouter router, ToolRegistry tools, Settings settings) {
@@ -285,12 +294,7 @@ public final class AgentLoop {
                 formatting == null ? AnswerFormatting.STEP_DOWN : formatting,
                 (housekeepingLimits == null ? HousekeepingLimits.DEFAULT : housekeepingLimits).answerFormattingTokens(),
                 () -> { }, AnswerFormatter.metering(response -> {
-                    Usage used = response.getUsage();
-                    UsageRecord record = new UsageRecord(executionId, usageScope, UsagePurpose.ANSWER_FORMATTING,
-                            response.getProviderUsed(), response.getModelUsed(),
-                            used == null ? 0 : used.getInputTokens(), used == null ? 0 : used.getOutputTokens(),
-                            used == null ? 0 : used.getEstimatedCostUsdCents(),
-                            used == null ? 0 : used.getEstimatedCostUsdMicros(), Instant.now(), usageTags);
+                    UsageRecord record = UsageRecord.of(executionId, usageScope, UsagePurpose.ANSWER_FORMATTING, response, usageTags);
                     usage.updateAndGet(totals -> totals.plus(record));
                     settings.usageMeter().record(record);
                 }));
@@ -331,6 +335,7 @@ public final class AgentLoop {
         private boolean compress = true;
         private List<CompressionMethod> compressionMethods;
         private ToolRegistry tools = new ToolRegistry();
+        private String untrustedMarkerSecret;
         private MemoryStore memory = DEFAULTS.memory();
         private ScopeLevel memoryLevel = DEFAULTS.memoryLevel();
         private Workspace workspace = DEFAULTS.workspace();
@@ -441,10 +446,24 @@ public final class AgentLoop {
         /**
          * Whether outside content — results of tools marked {@code untrustedOutput}, and attachment
          * text — is wrapped in markers the model is told to treat strictly as data. On by default;
-         * the markers carry a per-run random id, so content can't fake its own end marker.
+         * the markers carry a secret id, the same for every run in one conversation (scope), so content
+         * can't fake its own end marker — see {@link #untrustedMarkerSecret}.
          */
         public Builder labelUntrustedContent(boolean label) {
             this.labelUntrustedContent = label;
+            return this;
+        }
+
+        /**
+         * The key the untrusted-content marker ids are derived from (an HMAC of each conversation's scope), at
+         * least 16 characters. Random per loop by default, which is safe but changes the ids, and so the
+         * system instructions, after a restart or on another instance, costing one cache miss per conversation
+         * there. Set the same secret on every instance to keep them stable. Keep it secret, as you would a
+         * signing key: anyone who has it can work out a conversation's marker id.
+         */
+        public Builder untrustedMarkerSecret(String secret) {
+            this.untrustedMarkerSecret = Objects.requireNonNull(secret, "secret");
+            UntrustedMarkers.withSecret(secret); // validates it now rather than at build()
             return this;
         }
 
@@ -497,7 +516,8 @@ public final class AgentLoop {
                     ? new SemanticMemoryStore(memory, search) : memory;
             return new AgentLoop(effectiveRouter, tools, new Settings(effectiveMemory, memoryLevel, workspace, workspaceLevel,
                     workspaceLimits, conversations, interceptors, toolTimeout, meter, compaction,
-                    labelUntrustedContent, contentScreener, search));
+                    labelUntrustedContent, contentScreener, search,
+                    untrustedMarkerSecret == null ? UntrustedMarkers.random() : UntrustedMarkers.withSecret(untrustedMarkerSecret)));
         }
 
         private LlmRouter buildRouter() {
@@ -520,8 +540,7 @@ public final class AgentLoop {
          */
         private LlmRouter selfCompressingRouterWithCustomMethods() {
             AtomicReference<LlmRouter> self = new AtomicReference<>();
-            RequestInterceptor interceptor = (provider, model, request) ->
-                    HistoryCompressor.compress(request, provider, model, compressionMethods, self.get()).request();
+            RequestInterceptor interceptor = HistoryCompressor.interceptor(self, compressionMethods);
             LlmRouter built = adapters != null ? new LlmRouter(adapters, interceptor) : new LlmRouter(interceptor);
             self.set(built);
             return built;
@@ -614,11 +633,14 @@ public final class AgentLoop {
         /** Earlier turns of this conversation, prefixed to every model call. */
         private List<Message> conversation = List.of();
         private boolean persistConversation;
-        /** Context describing this request's attachments (and any text ones inline), or {@code null}. */
-        private Message attachmentNote;
-        /** Attachments the model sees directly: images and PDFs from the request, then files tools showed it. */
+        /** Text describing this request's attachments (and any text ones inline), added to its goal message; or {@code null}. */
+        private String attachmentNote;
+        /** Images and PDFs from the request, which the model sees directly: they go on its goal message. */
         private final List<Attachment> requestAttachments = new ArrayList<>();
-        private final LinkedHashMap<String, Attachment> shownFiles = new LinkedHashMap<>();
+        /** The message carrying the user's request and its attachments, once a goal-directed run has made it. */
+        private Message topGoal;
+        /** Files tools showed the model during the current step; they join the conversation after its tool results. */
+        private final LinkedHashMap<String, Attachment> shownThisStep = new LinkedHashMap<>();
         private List<String> attachmentPaths = List.of();
 
         private int nextThread = 1;
@@ -630,8 +652,11 @@ public final class AgentLoop {
         private final java.util.Set<String> untrustedSources = new java.util.LinkedHashSet<>();
         /** The current tool result is the loop's own message (a fixable error or a refusal), not tool output. */
         private boolean loopAuthoredResult;
-        /** Random per-run id in untrusted-content markers, so content can't forge an end marker. */
-        private final String markerId = UUID.randomUUID().toString().substring(0, 8);
+        /**
+         * Id in untrusted-content markers, so content can't forge an end marker: secret, and the same for every
+         * run in one conversation (so the system instructions, which name it, stay cacheable from turn to turn).
+         */
+        private final String markerId;
         /** provider/model pairs already warned about dropping attachments, so each warns once. */
         private final java.util.Set<String> attachmentDropWarnings = new java.util.HashSet<>();
         private Response lastResponse;
@@ -658,6 +683,7 @@ public final class AgentLoop {
             this.request = request;
             this.profile = request.agentProfile() != null ? request.agentProfile() : AgentProfile.DEFAULT;
             this.scope = request.scope() != null ? request.scope() : Scope.ephemeral(executionId);
+            this.markerId = settings.untrustedMarkers().markerId(scope);
             this.scopedMemory = settings.memory().scopedTo(scope.atLevel(settings.memoryLevel()));
             Scope workspacePartition = scope.atLevel(settings.workspaceLevel());
             SemanticSearch search = settings.semanticSearch();
@@ -668,7 +694,7 @@ public final class AgentLoop {
             } else {
                 SemanticSearch.RunContext runContext = new SemanticSearch.RunContext(executionId, scope,
                         this::addUsage,
-                        warning -> emit(currentThread, MessageType.WARNING, warning));
+                        warning -> emit(currentThread, MessageType.WARNING, warning), request.tags());
                 this.scopedWorkspace = settings.workspace().scopedTo(workspacePartition, settings.workspaceLimits(),
                         search.workspaceListener(workspacePartition, runContext));
                 this.knowledge = search.knowledge(workspacePartition, settings.workspace(), runContext);
@@ -726,7 +752,7 @@ public final class AgentLoop {
                     runner.interrupt();
                 }
                 limits = new Limits(ENCLOSING_LIMITS.isBound() ? ENCLOSING_LIMITS.get() : null, profile.maxSteps(), request.maxCostUsdCents(),
-                        request.maxDuration(), startedAt, request.windDown());
+                        request.maxDuration(), startedAt, request.windDown(), this::addDelegatedUsage);
                 ScopedValue.where(ENCLOSING_LIMITS, limits).run(() ->
                         SemanticSearch.withinRun(searchContext, () -> HistoryCompressor.withListener(this, () -> {
                             executeInScope();
@@ -763,7 +789,8 @@ public final class AgentLoop {
 
                 Plan plan = recursive ? null : generatePlan(systemInstructions, history);
                 StepOutcome outcome = plan == null
-                        ? runGoalDirected(request.prompt(), systemInstructions, history, 0, true, true)
+                        ? runGoalDirected(request.prompt(), topGoal = goalMessage(request.prompt()), systemInstructions, history, 0,
+                                true, true)
                         : executePlan(plan, systemInstructions, history, 0);
 
                 Response finalResponse = outcome.response().toBuilder().content(outcome.finalAnswer()).build();
@@ -842,15 +869,16 @@ public final class AgentLoop {
             }
             attachmentPaths = List.copyOf(saved);
             untrustedSources.add("attachments");
-            attachmentNote = Message.system("The user attached " + request.attachments().size()
-                    + " file(s) to this message:\n" + String.join("\n", lines));
+            attachmentNote = "The user attached " + request.attachments().size()
+                    + " file(s) to this message:\n" + String.join("\n", lines);
             emit(0, MessageType.INFO, "Received " + request.attachments().size() + " attachment(s)"
                     + (saved.isEmpty() ? "." : "; saved to " + String.join(", ", saved) + "."));
         }
 
         private void runNeverPlan() {
             emit(0, MessageType.THINKING, "Answering directly.");
-            Request req = request(request.prompt(), withSafetyGuidance(profileInstructions()), List.of())
+            Request req = request(withAttachmentNote(request.prompt()), withSafetyGuidance(profileInstructions()), List.of())
+                    .attachments(List.copyOf(requestAttachments))
                     .config(routerConfig)
                     .build();
             Response response = call(0, req, true, UsagePurpose.STEP);
@@ -864,9 +892,10 @@ public final class AgentLoop {
          */
         private boolean checkPlanNeeded(String systemInstructions) {
             int maxOutputTokens = request.housekeepingLimits().planCheckTokens();
-            Request req = request("Goal: " + request.prompt() + "\n\nDoes accomplishing this require breaking it into an "
-                            + "explicit multi-step plan executed in order, or can it be pursued step-by-step, "
+            Request req = request("Goal: " + withAttachmentNote(request.prompt()) + "\n\nDoes accomplishing this require "
+                            + "breaking it into an explicit multi-step plan executed in order, or can it be pursued step-by-step, "
                             + "deciding the next action as you go?", systemInstructions, List.of())
+                    .attachments(List.copyOf(requestAttachments))
                     .responseSchema(AgentLoopSchemas.PLAN_NEEDED_SCHEMA)
                     .config(RouterConfigs.costOptimized(routerConfig))
                     .maxOutputTokens(maxOutputTokens)
@@ -905,9 +934,11 @@ public final class AgentLoop {
             String guidance = profile.planningGuidance().isEmpty()
                     ? ""
                     : "\n\nPlanning guidance:\n- " + String.join("\n- ", profile.planningGuidance());
-            Request req = request("Goal: " + request.prompt() + guidance + "\n\nProduce an ordered list of steps (at most "
-                            + housekeeping.maxPlanSteps() + ") to accomplish this goal.",
+            Request req = request("Goal: " + withAttachmentNote(request.prompt()) + guidance
+                            + "\n\nProduce an ordered list of steps (at most " + housekeeping.maxPlanSteps()
+                            + ") to accomplish this goal.",
                     systemInstructions, history)
+                    .attachments(List.copyOf(requestAttachments))
                     .responseSchema(AgentLoopSchemas.planSchema(housekeeping.maxPlanSteps()))
                     .config(routerConfig)
                     .maxOutputTokens(housekeeping.planTokens())
@@ -983,19 +1014,21 @@ public final class AgentLoop {
         }
 
         /**
-         * Steps share {@code history}, seeded with the overall goal (each step's own prompt is
-         * only its description) and accumulating each completed step's answer, so later steps
-         * build on earlier ones rather than starting blind.
+         * Steps share {@code history}, seeded with the overall goal (each step adds only its own
+         * description) and accumulating each completed step's answer, so later steps build on
+         * earlier ones rather than starting blind.
          */
         private StepOutcome executePlan(Plan plan, String systemInstructions, List<Message> history, int thread) {
-            history.add(Message.user("Overall goal: " + request.prompt()));
+            history.add(topGoal = goalMessage("Overall goal: " + request.prompt()));
             StepOutcome last = null;
             List<PlanStep> planSteps = plan.steps();
             for (int i = 0; i < planSteps.size(); i++) {
                 PlanStep planStep = planSteps.get(i);
                 emit(thread, MessageType.PROGRESS, "Starting plan step: " + planStep.description());
                 boolean finalStep = i == planSteps.size() - 1;
-                last = runGoalDirected(planStep.description(), systemInstructions, history, thread, false, finalStep);
+                last = runGoalDirected(planStep.description(),
+                        Message.user("Plan step " + (i + 1) + " of " + planSteps.size() + ": " + planStep.description()),
+                        systemInstructions, history, thread, false, finalStep);
             }
             if (last == null) {
                 throw new IllegalStateException("Plan had no steps");
@@ -1009,12 +1042,19 @@ public final class AgentLoop {
          * a plain-text answer or via {@code report_complete}. {@code userFacing} steps (whose answer
          * is what the user sees) stream to the {@link AnswerStream}, if there is one; for those,
          * {@code report_complete} isn't offered, so the answer arrives as streamable text.
+         *
+         * <p>{@code goalTurn} (the goal as the model reads it) is the first call's prompt, and then joins
+         * {@code history}, once; every later call only appends, and its prompt just says to continue. So
+         * what each call sends starts with exactly what the previous one sent, and providers read it from
+         * their prompt cache. What changes from step to step (recalled memory, limit warnings) goes in the
+         * prompt, which no later call repeats.
          */
         private StepOutcome runGoalDirected(
-                String goal, String systemInstructions, List<Message> history, int thread, boolean allowSubTasks,
-                boolean userFacing) {
+                String goal, Message goalTurn, String systemInstructions, List<Message> history, int thread,
+                boolean allowSubTasks, boolean userFacing) {
             emit(thread, MessageType.THINKING, "Working on: " + goal);
             boolean streaming = userFacing && answerStream != null;
+            boolean goalSent = false;
             frames.addLast(new Frame(systemInstructions, history)); // left in place if a limit unwinds this
 
             while (true) {
@@ -1026,19 +1066,20 @@ public final class AgentLoop {
                     availableTools.add(AgentLoopSchemas.SPAWN_SUB_TASK);
                 }
 
-                List<Message> effectiveHistory = new ArrayList<>(history);
                 List<MemoryEntry> recalled = scopedMemory.search(goal, AUTO_RECALL_LIMIT);
-                if (!recalled.isEmpty()) {
-                    effectiveHistory.add(Message.system("Relevant memory:\n- " + String.join("\n- ",
-                            recalled.stream().map(MemoryEntry::content).toList())));
-                }
+                String prompt = (goalSent ? CONTINUE_PROMPT : goalTurn.getContent()) + (recalled.isEmpty() ? ""
+                        : "\n\n" + MEMORY_NOTE_PREFIX + String.join("\n- ", recalled.stream().map(MemoryEntry::content).toList()));
 
-                Request req = request(history.isEmpty() ? goal : "Continue toward the goal: " + goal,
-                        systemInstructions, effectiveHistory)
+                Request req = request(prompt, systemInstructions, history)
+                        .attachments(goalSent ? List.of() : goalTurn.getAttachments())
                         .tools(List.copyOf(availableTools))
                         .config(toolsRequiredConfig)
                         .build();
                 Response response = call(thread, req, streaming, UsagePurpose.STEP);
+                if (!goalSent) {
+                    history.add(goalTurn);
+                    goalSent = true;
+                }
                 if (streamedThisCall && !response.getToolCalls().isEmpty()) {
                     answerStream.onDiscard(); // that text was a preamble to tool calls, not the answer
                 }
@@ -1070,8 +1111,8 @@ public final class AgentLoop {
                     emit(thread, MessageType.PROGRESS, "Delegating sub-task: " + subGoal);
                     recordStep(thread, StepAction.SUB_TASK, goal, null, null, subGoal, response);
 
-                    StepOutcome subOutcome =
-                            runGoalDirected(subGoal, systemInstructions, new ArrayList<>(history), subThread, true, false);
+                    StepOutcome subOutcome = runGoalDirected(subGoal, Message.user(subGoal),
+                            systemInstructions, new ArrayList<>(history), subThread, true, false);
 
                     history.add(Message.assistant(response.getContent(), List.of(subTask.get())));
                     history.add(Message.tool(subTask.get().getId(), subOutcome.finalAnswer()));
@@ -1086,6 +1127,7 @@ public final class AgentLoop {
                         recordStep(thread, StepAction.TOOL_CALL, goal, call.getName(), result, null, response);
                         history.add(Message.tool(call.getId(), result));
                     }
+                    addShownFiles(history);
                     continue;
                 }
 
@@ -1107,23 +1149,46 @@ public final class AgentLoop {
             for (RegisteredTool tool : tools.all()) {
                 tool.definitionFor(hasWorkspace).ifPresent(offered::add);
             }
+            // The same tools in the same order on every call: tools head the cached prefix, so any change costs it all.
+            offered.sort(java.util.Comparator.comparing(ToolDefinition::getName));
             return offered;
         }
 
-        /** A request carrying everything every call needs: the conversation so far, attachment context, and what the model can see. */
+        /**
+         * A request carrying what every call needs: the run's operating context (a system turn, so the
+         * instructions before it stay the same from run to run), the conversation so far, and {@code history}.
+         */
         private Request.RequestBuilder request(String prompt, String systemInstructions, List<Message> history) {
-            List<Message> messages = new ArrayList<>(conversation);
-            if (attachmentNote != null) {
-                messages.add(attachmentNote);
+            List<Message> messages = new ArrayList<>();
+            if (request.operatingContext() != null && !request.operatingContext().isBlank()) {
+                messages.add(Message.system(RUN_CONTEXT_HEADING + "\n" + request.operatingContext()));
             }
+            messages.addAll(conversation);
             messages.addAll(history);
-            List<Attachment> visible = new ArrayList<>(requestAttachments);
-            visible.addAll(shownFiles.values());
             return Request.builder()
                     .prompt(prompt)
                     .systemInstructions(systemInstructions)
-                    .history(List.copyOf(messages))
-                    .attachments(List.copyOf(visible));
+                    .history(List.copyOf(messages));
+        }
+
+        /** {@code text} as the user's goal message: with the attachment note, and the images and PDFs they attached. */
+        private Message goalMessage(String text) {
+            return Message.user(withAttachmentNote(text), requestAttachments);
+        }
+
+        /** {@code text}, followed by the note describing the request's attachments, if it has any. */
+        private String withAttachmentNote(String text) {
+            return attachmentNote == null ? text : text + "\n\n" + attachmentNote;
+        }
+
+        /** Files tools showed the model this step, as a user message after the step's tool results. */
+        private void addShownFiles(List<Message> history) {
+            if (shownThisStep.isEmpty()) {
+                return;
+            }
+            history.add(Message.user("Showing you " + String.join(", ", shownThisStep.keySet()) + ".",
+                    List.copyOf(shownThisStep.values())));
+            shownThisStep.clear();
         }
 
         // ---- tools --------------------------------------------------------------------------
@@ -1212,12 +1277,9 @@ public final class AgentLoop {
                     + content.replace(end, "[[end-untrusted-content]]") + "\n" + end;
         }
 
-        /** The profile's system instructions, followed by this run's own operating context, if any. */
+        /** The profile's system instructions; this run's operating context goes in its own system turn ({@link #request}). */
         private String profileInstructions() {
-            String fragment = profile.toSystemInstructionsFragment();
-            return request.operatingContext() == null
-                    ? fragment
-                    : fragment + "\n\n" + RUN_CONTEXT_HEADING + "\n" + request.operatingContext();
+            return profile.toSystemInstructionsFragment();
         }
 
         private String withSafetyGuidance(String instructions) {
@@ -1340,11 +1402,11 @@ public final class AgentLoop {
 
                 @Override
                 public void showToModel(WorkspaceFile file) {
-                    shownFiles.remove(file.path());
-                    shownFiles.put(file.path(), Attachment.builder()
+                    shownThisStep.remove(file.path());
+                    shownThisStep.put(file.path(), Attachment.builder()
                             .mediaType(file.mediaType()).data(file.content()).filename(file.path()).build());
-                    while (shownFiles.size() > MAX_SHOWN_FILES) {
-                        shownFiles.remove(shownFiles.keySet().iterator().next());
+                    while (shownThisStep.size() > MAX_SHOWN_FILES) {
+                        shownThisStep.remove(shownThisStep.keySet().iterator().next());
                     }
                     emit(thread, MessageType.INFO, "Showing " + file.path() + " to the model.");
                 }
@@ -1450,21 +1512,28 @@ public final class AgentLoop {
 
         /** Records one model call's usage on the run's totals and with the loop's {@link UsageMeter}. */
         private void meter(UsagePurpose purpose, Response response) {
-            Usage usage = response.getUsage();
-            UsageRecord record = new UsageRecord(executionId, scope, purpose, response.getProviderUsed(), response.getModelUsed(),
-                    usage == null ? 0 : usage.getInputTokens(), usage == null ? 0 : usage.getOutputTokens(),
-                    usage == null ? 0 : usage.getEstimatedCostUsdCents(), usage == null ? 0 : usage.getEstimatedCostUsdMicros(),
-                    Instant.now(), request.tags());
+            UsageRecord record = UsageRecord.of(executionId, scope, purpose, response, request.tags());
             addUsage(record);
             settings.usageMeter().record(record);
         }
 
-        /** Adds a metered call to this run's totals and to the spend of its limits (and enclosing runs'). */
+        /**
+         * Adds a metered call to this run's totals and to the spend of its limits; and, for a run delegated from
+         * another (a run started inside an enclosing run's tool), to the enclosing runs' totals and spend too.
+         */
         private void addUsage(UsageRecord record) {
             runUsage = runUsage.plus(record);
             for (Limits l = limits; l != null; l = l.enclosing) {
                 l.spentMicros += record.costUsdMicros();
+                if (l != limits) {
+                    l.runUsage.accept(record);
+                }
             }
+        }
+
+        /** Adds a call one of this run's delegated runs made to this run's totals (its spend is counted by {@link #addUsage}). */
+        private void addDelegatedUsage(UsageRecord record) {
+            runUsage = runUsage.plus(record);
         }
 
         /**
@@ -1563,7 +1632,11 @@ public final class AgentLoop {
             }
         }
 
-        /** {@code req} plus a system note for each limit (this run's or an enclosing run's) that's now close and not yet warned about. */
+        /**
+         * {@code req} with a note for each limit (this run's or an enclosing run's) that's now close and not yet
+         * warned about, at the start of its prompt: the prompt isn't repeated by later calls, so the warning
+         * leaves the cached conversation as it is.
+         */
         private Request withLimitWarnings(int thread, Request req) {
             List<String> notes = new ArrayList<>();
             for (Limits l : limits.outermostFirst()) {
@@ -1581,11 +1654,9 @@ public final class AgentLoop {
             if (notes.isEmpty()) {
                 return req;
             }
-            List<Message> history = new ArrayList<>(req.getHistory());
-            history.add(Message.system(LIMIT_WARNING_PREFIX + String.join("; ", notes) + ". Stop gathering information "
+            return req.toBuilder().prompt(LIMIT_WARNING_PREFIX + String.join("; ", notes) + ". Stop gathering information "
                     + "and don't start new work: give your final answer now, from what you already have. If something "
-                    + "is unfinished or uncertain, say so in the answer."));
-            return req.toBuilder().history(List.copyOf(history)).build();
+                    + "is unfinished or uncertain, say so in the answer.\n\n" + req.getPrompt()).build();
         }
 
         /**
@@ -1620,10 +1691,12 @@ public final class AgentLoop {
             Frame frame = frames.peekLast();
             String systemInstructions = frame != null ? frame.systemInstructions() : withSafetyGuidance(profileInstructions());
             List<Message> gathered = frame != null ? toolUseAsText(frame.history()) : List.of();
+            boolean requestInGathered = gathered.stream().anyMatch(message -> message == topGoal);
             Request req = request(WRAP_UP_PREFIX + limits.name(reason) + ", so you can't use tools or do any more work. "
                     + "Using only what has been gathered so far, give your best complete final answer to the request below, "
                     + "addressed to the user. If anything is unfinished or uncertain, say so briefly.\n\nRequest:\n"
-                    + request.prompt(), systemInstructions, gathered)
+                    + (requestInGathered ? request.prompt() : withAttachmentNote(request.prompt())), systemInstructions, gathered)
+                    .attachments(requestInGathered ? List.of() : List.copyOf(requestAttachments))
                     .config(routerConfig)
                     .maxOutputTokens(request.housekeepingLimits().wrapUpTokens())
                     .build();
@@ -1891,8 +1964,11 @@ public final class AgentLoop {
     private static final List<TerminationReason> LIMIT_KINDS = List.of(
             TerminationReason.STEP_LIMIT_REACHED, TerminationReason.COST_LIMIT_REACHED, TerminationReason.TIME_LIMIT_REACHED);
 
-    /** Starts the system note added to a model call when a limit is close. */
+    /** Starts the note added to a model call's prompt when a limit is close. */
     static final String LIMIT_WARNING_PREFIX = "Limit warning: ";
+
+    /** Starts the memories recalled into a working step's prompt. */
+    static final String MEMORY_NOTE_PREFIX = "Relevant memory:\n- ";
 
     /** Starts the prompt of the final, tools-off call when a limit is reached. */
     static final String WRAP_UP_PREFIX = "You've reached this run's ";
@@ -1913,11 +1989,15 @@ public final class AgentLoop {
         final Duration maxDuration;
         final Instant startedAt;
         final WindDown windDown;
+        /** The run these limits belong to, told about its delegated runs' calls so its totals include them. */
+        final Consumer<UsageRecord> runUsage;
         int steps;
         long spentMicros;
 
-        Limits(Limits enclosing, int maxSteps, Integer maxCostUsdCents, Duration maxDuration, Instant startedAt, WindDown windDown) {
+        Limits(Limits enclosing, int maxSteps, Integer maxCostUsdCents, Duration maxDuration, Instant startedAt, WindDown windDown,
+                Consumer<UsageRecord> runUsage) {
             this.enclosing = enclosing;
+            this.runUsage = runUsage;
             this.maxSteps = maxSteps;
             this.maxCostMicros = maxCostUsdCents == null ? null : maxCostUsdCents * 10_000L;
             this.maxDuration = maxDuration;

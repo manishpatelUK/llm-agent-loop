@@ -102,7 +102,10 @@ class AttachmentsTest {
 
         loop.runAndWait(request().attachments(List.of(InputFile.of("photo.png", PNG))));
 
-        assertThat(model.requests).hasSize(2).allSatisfy(r -> assertThat(r.getAttachments()).hasSize(1));
+        assertThat(model.requests).hasSize(2).allSatisfy(r -> assertThat(r.everyAttachment()).hasSize(1));
+        assertThat(model.requests.get(1).getAttachments()).as("not sent again with the prompt").isEmpty();
+        assertThat(model.requests.get(1).getHistory().getFirst().getAttachments()).as("but with the goal, in the conversation")
+                .hasSize(1);
     }
 
     @Test
@@ -116,8 +119,10 @@ class AttachmentsTest {
 
         AgentLoopResult result = loop.runAndWait(request());
 
-        assertThat(model.requests.get(0).getAttachments()).isEmpty();
-        assertThat(model.requests.get(1).getAttachments()).extracting(Attachment::getFilename).containsExactly("charts/q3.png");
+        assertThat(model.requests.get(0).everyAttachment()).isEmpty();
+        assertThat(model.requests.get(1).everyAttachment()).extracting(Attachment::getFilename).containsExactly("charts/q3.png");
+        assertThat(model.requests.get(1).getHistory().getLast().getAttachments()).as("in a message after the tool result")
+                .extracting(Attachment::getFilename).containsExactly("charts/q3.png");
         assertThat(lastToolResult(model.requests.get(1))).isEqualTo("You can now see charts/q3.png directly.");
         assertThat(result.finalResponse().getContent()).isEqualTo("It's a bar chart.");
     }
@@ -134,16 +139,18 @@ class AttachmentsTest {
         loop.runAndWait(request());
 
         assertThat(lastToolResult(model.requests.get(1))).startsWith("Error: notes.md is text/markdown; only images and PDFs");
-        assertThat(model.requests.get(1).getAttachments()).isEmpty();
+        assertThat(model.requests.get(1).everyAttachment()).isEmpty();
     }
 
     private static LoopRequest.LoopRequestBuilder request() {
         return LoopRequest.builder().prompt("Take a look").scope(ALICE).agentProfile(RECURSIVE);
     }
 
+    /** The note describing the attachments: with the goal, in the first call's prompt (never a system turn). */
     private static String note(Request request) {
-        return request.getHistory().stream().map(Message::getContent)
-                .filter(content -> content.startsWith("The user attached"))
-                .findFirst().orElseThrow();
+        assertThat(request.getHistory()).noneMatch(m -> m.getContent().contains("The user attached"));
+        int at = request.getPrompt().indexOf("The user attached");
+        assertThat(at).isPositive();
+        return request.getPrompt().substring(at);
     }
 }

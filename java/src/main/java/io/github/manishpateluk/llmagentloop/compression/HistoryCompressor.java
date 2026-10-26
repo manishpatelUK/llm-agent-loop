@@ -96,6 +96,11 @@ public final class HistoryCompressor {
      * same as any other in-attempt failure (§5.1) and falls back to the next candidate, which may
      * have a larger context window and not need compression at all.
      *
+     * <p>Compressions are kept stable from call to call: a request whose history starts with one this router
+     * already compressed for the same model reuses that compressed start and only appends to it, and is compressed
+     * again only when that no longer fits. So an agent loop's calls keep the same prefix (and stay readable from
+     * the provider's prompt cache), and an LLM summary is made once rather than on every call.
+     *
      * @param adapters explicit adapters, same as {@code new LlmRouter(adapters)}
      * @param methods  ordered preference list of {@link CompressionMethod} to try on every attempt
      */
@@ -113,7 +118,18 @@ public final class HistoryCompressor {
      * which can't happen before that constructor returns.
      */
     private static RequestInterceptor compressingInterceptor(AtomicReference<LlmRouter> self, List<CompressionMethod> methods) {
-        return (provider, model, request) -> compress(request, provider, model, methods, self.get()).request();
+        return interceptor(self, methods);
+    }
+
+    /**
+     * The {@link RequestInterceptor} {@link #newSelfCompressingRouter} installs — compressing with {@code methods},
+     * stably from call to call — for a router built some other way. Set {@code self} to that router once it's
+     * built; {@code LLM_SUMMARIZATION} calls go through it.
+     */
+    public static RequestInterceptor interceptor(AtomicReference<LlmRouter> self, List<CompressionMethod> methods) {
+        CompressionMemo memo = new CompressionMemo();
+        return (provider, model, request) -> memo.compress(request, provider, model,
+                candidate -> compress(candidate, provider, model, methods, self.get()).request());
     }
 
     /** Tells the bound {@link CompressionListener}, if any, about a model call compression made. */

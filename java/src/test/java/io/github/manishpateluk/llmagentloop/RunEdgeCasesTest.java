@@ -17,7 +17,10 @@ import io.github.manishpateluk.llmrouter.capability.ModelCapabilityTable;
 import io.github.manishpateluk.llmrouter.capability.ModelEntry;
 import io.github.manishpateluk.llmrouter.config.RouteEntry;
 import io.github.manishpateluk.llmrouter.config.RouterConfig;
+import io.github.manishpateluk.llmrouter.model.Attachment;
+import io.github.manishpateluk.llmrouter.model.Message;
 import io.github.manishpateluk.llmrouter.model.Request;
+import io.github.manishpateluk.llmrouter.model.ToolDefinition;
 import io.github.manishpateluk.llmrouter.model.Response;
 import io.github.manishpateluk.llmrouter.model.Usage;
 import io.github.manishpateluk.llmrouter.provider.Provider;
@@ -211,7 +214,7 @@ class RunEdgeCasesTest {
     }
 
     @Test
-    void atMostTenViewedFilesAreShownToTheModelAndTheOldestDropsOff() {
+    void viewedFilesJoinTheConversationOnceEachInTheStepThatShowedThem() {
         InMemoryWorkspace workspace = new InMemoryWorkspace();
         Scope partition = SCOPE.atLevel(ScopeLevel.USER);
         MockModel model = new MockModel();
@@ -227,8 +230,41 @@ class RunEdgeCasesTest {
         TestRun run = TestRuns.run(loop, LoopRequest.builder().prompt("Look at the images").agentProfile(MockModel.STEP_BY_STEP).scope(SCOPE));
 
         assertThat(run.error()).isNull();
-        Map<String, Object> shown = new LinkedHashMap<>();
-        model.requests().getLast().getAttachments().forEach(a -> shown.put(a.getFilename(), a));
-        assertThat(shown.keySet()).hasSize(10).doesNotContain("images/1.png").contains("images/2.png", "images/11.png");
+        Request last = model.requests().getLast();
+        assertThat(last.getAttachments()).as("nothing re-sent with the prompt").isEmpty();
+        assertThat(last.everyAttachment()).extracting(Attachment::getFilename).as("each once, in the order shown")
+                .containsExactlyElementsOf(java.util.stream.IntStream.rangeClosed(1, 11).mapToObj(i -> "images/" + i + ".png").toList());
+        for (int step = 1; step < model.requests().size(); step++) {
+            List<Message> earlier = model.requests().get(step - 1).getHistory();
+            assertThat(model.requests().get(step).getHistory().subList(0, earlier.size()))
+                    .as("step %d starts with step %d's conversation", step, step - 1).isEqualTo(earlier);
+        }
+    }
+
+    @Test
+    void oneStepShowsAtMostTenFilesTheEarliestOfMoreDropOff() {
+        InMemoryWorkspace workspace = new InMemoryWorkspace();
+        Scope partition = SCOPE.atLevel(ScopeLevel.USER);
+        Map<String, Map<String, Object>> views = new LinkedHashMap<>();
+        ToolRegistry tools = new ToolRegistry().registerAll(WorkspaceTools.all());
+        for (int i = 1; i <= 11; i++) {
+            String path = "images/" + i + ".png";
+            workspace.write(partition, new io.github.manishpateluk.llmagentloop.workspace.WorkspaceFile(
+                    path, "image/png", new byte[]{(byte) 0x89, 'P', 'N', 'G'}, Instant.now()));
+            tools.register(ToolDefinition.builder().name("view_" + i).description("Views " + path)
+                    .parameters(Map.of("type", "object")).build(), (args, context) -> {
+                context.showToModel(context.workspace().require(path));
+                return "Showing " + path;
+            });
+            views.put("view_" + i, Map.of());
+        }
+        MockModel model = new MockModel().callTools(views).reply("Seen them.");
+        AgentLoop loop = model.loopBuilder().workspace(workspace).tools(tools).build();
+
+        TestRun run = TestRuns.run(loop, LoopRequest.builder().prompt("Look at the images").agentProfile(MockModel.STEP_BY_STEP).scope(SCOPE));
+
+        assertThat(run.error()).isNull();
+        assertThat(model.requests().getLast().everyAttachment()).extracting(Attachment::getFilename)
+                .hasSize(10).doesNotContain("images/1.png").contains("images/2.png", "images/11.png");
     }
 }

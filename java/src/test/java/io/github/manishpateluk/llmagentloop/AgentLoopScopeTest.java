@@ -140,12 +140,12 @@ class AgentLoopScopeTest {
         return LoopRequest.builder().prompt(prompt).agentProfile(RECURSIVE).scope(scope);
     }
 
-    /** The loop adds auto-recalled memory to a step's history as a system message. */
+    /** The loop adds auto-recalled memory to a step's prompt, after the goal, never to its history or system prompt. */
     private static String recalledMemory(Request request) {
-        return request.getHistory().stream()
-                .filter(m -> m.getRole() == Role.SYSTEM && m.getContent().startsWith("Relevant memory"))
-                .map(Message::getContent)
-                .findFirst().orElse("");
+        assertThat(request.getHistory()).noneMatch(m -> m.getContent() != null && m.getContent().contains("Relevant memory"));
+        assertThat(request.getSystemInstructions()).doesNotContain("Relevant memory");
+        int at = request.getPrompt().indexOf("Relevant memory");
+        return at < 0 ? "" : request.getPrompt().substring(at);
     }
 
     private static Response toolCall(String id, String name, Map<String, Object> arguments) {

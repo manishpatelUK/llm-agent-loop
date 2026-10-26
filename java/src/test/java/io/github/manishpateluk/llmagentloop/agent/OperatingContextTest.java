@@ -52,7 +52,7 @@ class OperatingContextTest {
                 // The agent's own profile wins over one set on the request.
                 .agentProfile(AgentProfile.builder().instructions("IGNORED").planMode(PlanMode.ALWAYS_PLAN).build()));
 
-        String system = model.requests().getFirst().getSystemInstructions();
+        String system = systemPrompt(model.requests().getFirst());
         assertThat(system).startsWith("You are the chat agent.").doesNotContain("IGNORED")
                 .contains(HEADING + "\n" + CONTEXT);
         assertThat(system.indexOf(HEADING)).isGreaterThan(system.indexOf("Agent operating profile:"));
@@ -69,9 +69,9 @@ class OperatingContextTest {
         runtime.runAndWait(agent, LoopRequest.builder().prompt("b").scope(ALICE).operatingContext("Plan: paid"));
         runtime.runAndWait(agent, LoopRequest.builder().prompt("c").scope(ALICE));
 
-        assertThat(model.requests().get(0).getSystemInstructions()).contains("Plan: free").doesNotContain("Plan: paid");
-        assertThat(model.requests().get(1).getSystemInstructions()).contains("Plan: paid").doesNotContain("Plan: free");
-        assertThat(model.requests().get(2).getSystemInstructions()).doesNotContain(HEADING);
+        assertThat(systemPrompt(model.requests().get(0))).contains("Plan: free").doesNotContain("Plan: paid");
+        assertThat(systemPrompt(model.requests().get(1))).contains("Plan: paid").doesNotContain("Plan: free");
+        assertThat(systemPrompt(model.requests().get(2))).doesNotContain(HEADING);
     }
 
     @Test
@@ -80,7 +80,7 @@ class OperatingContextTest {
         new AgentRuntime(model.loopBuilder().build()).runAndWait(chat(), LoopRequest.builder().prompt("hi").scope(ALICE)
                 .operatingContext("   "));
 
-        assertThat(model.requests().getFirst().getSystemInstructions()).doesNotContain(HEADING);
+        assertThat(systemPrompt(model.requests().getFirst())).doesNotContain(HEADING);
     }
 
     @Test
@@ -92,7 +92,7 @@ class OperatingContextTest {
                 .operatingContext(CONTEXT));
 
         Request delegated = model.requests().get(1);
-        assertThat(delegated.getSystemInstructions()).startsWith("You research markets.").contains(HEADING + "\n" + CONTEXT);
+        assertThat(systemPrompt(delegated)).startsWith("You research markets.").contains(HEADING + "\n" + CONTEXT);
         assertThat(delegated.getPrompt()).isEqualTo("Size the UK market");
     }
 
@@ -106,8 +106,8 @@ class OperatingContextTest {
 
         runtime.runAndWait(chat, LoopRequest.builder().prompt("How big is the UK market?").scope(ALICE).operatingContext(CONTEXT));
 
-        assertThat(model.requests().getFirst().getSystemInstructions()).contains(CONTEXT);
-        assertThat(model.requests().get(1).getSystemInstructions()).startsWith("You research markets.")
+        assertThat(systemPrompt(model.requests().getFirst())).contains(CONTEXT);
+        assertThat(systemPrompt(model.requests().get(1))).startsWith("You research markets.")
                 .doesNotContain(HEADING).doesNotContain("Alice");
     }
 
@@ -120,5 +120,16 @@ class OperatingContextTest {
                 .operatingContext(CONTEXT).routerConfig(pinned));
 
         assertThat(model.requests().getFirst().getConfig().getRoute()).isEqualTo(pinned.getRoute());
+    }
+
+    /**
+     * The system prompt as every provider receives it: the request's instructions, then its history's system
+     * turns (where the run's operating context goes, so the instructions stay the same from run to run).
+     */
+    private static String systemPrompt(Request request) {
+        StringBuilder system = new StringBuilder(request.getSystemInstructions());
+        request.getHistory().stream().filter(m -> m.getRole() == io.github.manishpateluk.llmrouter.model.Role.SYSTEM)
+                .forEach(m -> system.append("\n\n").append(m.getContent()));
+        return system.toString();
     }
 }

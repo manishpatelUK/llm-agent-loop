@@ -65,6 +65,8 @@ public final class MockModel {
     };
     private int inputTokens = 10;
     private int outputTokens = 5;
+    private int cacheReadTokens;
+    private int cacheWriteTokens;
 
     /** The next call replies with plain text — how the agent gives its final answer. */
     public synchronized MockModel reply(String text) {
@@ -120,10 +122,20 @@ public final class MockModel {
         return this;
     }
 
-    /** Token counts reported on every reply (defaults: 10 in, 5 out). */
+    /** Token counts reported on every reply (defaults: 10 in, 5 out, nothing cached). */
     public synchronized MockModel usage(int inputTokens, int outputTokens) {
+        return usage(inputTokens, outputTokens, 0, 0);
+    }
+
+    /**
+     * Token counts reported on every reply, with the parts of {@code inputTokens} read from and written to
+     * the prompt cache — to test how a meter or dashboard handles cached input.
+     */
+    public synchronized MockModel usage(int inputTokens, int outputTokens, int cacheReadTokens, int cacheWriteTokens) {
         this.inputTokens = inputTokens;
         this.outputTokens = outputTokens;
+        this.cacheReadTokens = cacheReadTokens;
+        this.cacheWriteTokens = cacheWriteTokens;
         return this;
     }
 
@@ -158,6 +170,22 @@ public final class MockModel {
         return null;
     }
 
+    /**
+     * The goal a working step is pursuing: the latest goal message in its conversation — the user's request,
+     * a plan step or a sub-task. A step's prompt only says to continue; the goal is in the conversation, once.
+     * {@code null} when there's none (a call before any goal, such as a plan check).
+     */
+    public static String goal(Request request) {
+        List<Message> history = request.getHistory();
+        for (int i = history.size() - 1; i >= 0; i--) {
+            Message message = history.get(i);
+            if (message.getRole() == Role.USER && !message.getContent().startsWith("Showing you ")) {
+                return message.getContent();
+            }
+        }
+        return null;
+    }
+
     /** Names of the tools offered to the model in a request. */
     public static List<String> toolsOffered(Request request) {
         return request.getTools().stream().map(t -> t.getName()).toList();
@@ -171,7 +199,8 @@ public final class MockModel {
         }
         Response response = responder.apply(request);
         return response.getUsage() != null ? response
-                : response.toBuilder().usage(Usage.builder().inputTokens(inputTokens).outputTokens(outputTokens).build()).build();
+                : response.toBuilder().usage(Usage.builder().inputTokens(inputTokens).outputTokens(outputTokens)
+                        .cacheReadTokens(cacheReadTokens).cacheWriteTokens(cacheWriteTokens).build()).build();
     }
 
     private static String quote(String text) {

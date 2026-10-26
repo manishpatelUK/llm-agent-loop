@@ -34,7 +34,7 @@ final class RequestTokenEstimator {
         if (request.getPrompt() != null) {
             total += TokenEstimator.estimateTokens(request.getPrompt());
         }
-        for (Attachment attachment : request.getAttachments()) {
+        for (Attachment attachment : request.everyAttachment()) {
             total += estimateAttachmentTokens(attachment);
         }
         return total;

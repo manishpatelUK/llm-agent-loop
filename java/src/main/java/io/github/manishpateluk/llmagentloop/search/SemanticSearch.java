@@ -171,12 +171,20 @@ public final class SemanticSearch {
      * @param scope       the run's full scope, for usage records
      * @param runUsage    also told about usage that happens on the run's own thread (for its totals)
      * @param warnings    told when indexing fails during the run
+     * @param tags        the run's {@code LoopRequest.tags}, copied onto its embedding calls' usage records
      */
-    public record RunContext(UUID executionId, Scope scope, Consumer<UsageRecord> runUsage, Consumer<String> warnings) {
+    public record RunContext(UUID executionId, Scope scope, Consumer<UsageRecord> runUsage, Consumer<String> warnings,
+                             Map<String, String> tags) {
         public RunContext {
             Objects.requireNonNull(scope, "scope");
             runUsage = runUsage == null ? record -> { } : runUsage;
             warnings = warnings == null ? warning -> { } : warnings;
+            tags = tags == null ? Map.of() : Map.copyOf(tags);
+        }
+
+        /** A run context without usage tags. */
+        public RunContext(UUID executionId, Scope scope, Consumer<UsageRecord> runUsage, Consumer<String> warnings) {
+            this(executionId, scope, runUsage, warnings, Map.of());
         }
     }
 
@@ -203,7 +211,7 @@ public final class SemanticSearch {
             return WorkspaceListener.NONE;
         }
         boolean inBackground = workspaceIndexing == WorkspaceIndexing.ON_WRITE_BACKGROUND;
-        Attribution attribution = new Attribution(run.executionId(), run.scope(), inBackground ? null : run.runUsage());
+        Attribution attribution = new Attribution(run.executionId(), run.scope(), inBackground ? null : run.runUsage(), run.tags());
         return new WorkspaceListener() {
             @Override
             public void written(WorkspaceFile file) {
@@ -232,7 +240,7 @@ public final class SemanticSearch {
 
     /** What {@code ToolContext.knowledge()} returns for a run: search, refreshing first under {@link WorkspaceIndexing#ON_SEARCH}. */
     public KnowledgeSearch knowledge(Scope partition, Workspace workspace, RunContext run) {
-        Attribution attribution = new Attribution(run.executionId(), run.scope(), run.runUsage());
+        Attribution attribution = new Attribution(run.executionId(), run.scope(), run.runUsage(), run.tags());
         return (query, limit) -> {
             if (workspaceIndexing == WorkspaceIndexing.ON_SEARCH) {
                 refresh(partition, workspace, attribution);
@@ -261,16 +269,16 @@ public final class SemanticSearch {
     // ---- internals -------------------------------------------------------------------------
 
     /** Billing for embedding calls: {@code runUsage} is null when the call isn't on the run's thread. */
-    private record Attribution(UUID executionId, Scope scope, Consumer<UsageRecord> runUsage) {
+    private record Attribution(UUID executionId, Scope scope, Consumer<UsageRecord> runUsage, Map<String, String> tags) {
     }
 
     /** The current run if there is one (see {@link #withinRun}), else {@code scope} with no execution id. */
     private Attribution attribution(Scope scope) {
         if (CURRENT_RUN.isBound()) {
             RunContext run = CURRENT_RUN.get();
-            return new Attribution(run.executionId(), run.scope(), run.runUsage());
+            return new Attribution(run.executionId(), run.scope(), run.runUsage(), run.tags());
         }
-        return new Attribution(null, scope, null);
+        return new Attribution(null, scope, null, Map.of());
     }
 
     private void indexFile(Scope scope, WorkspaceFile file, Attribution attribution) {
@@ -338,7 +346,8 @@ public final class SemanticSearch {
         }
         UsageRecord record = new UsageRecord(attribution.executionId(), attribution.scope(), UsagePurpose.EMBEDDING,
                 embeddings.provider(), embeddings.model(), embeddings.inputTokens(), 0,
-                Math.round(embeddings.costUsdMicros() / 10_000.0), embeddings.costUsdMicros(), Instant.now());
+                Math.round(embeddings.costUsdMicros() / 10_000.0), embeddings.costUsdMicros(), Instant.now(),
+                attribution.tags());
         meter.record(record);
         if (attribution.runUsage() != null) {
             attribution.runUsage().accept(record);

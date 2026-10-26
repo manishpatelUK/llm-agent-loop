@@ -16,8 +16,9 @@ import java.util.Map;
  *
  * @param changedFiles normalized workspace paths this run wrote or deleted, in first-touched
  *                     order; read them from the same {@code Workspace} and scope to get their content
- * @param usage        every model call this run made, summed — tokens and estimated cost — including
- *                     planning, answer formatting, history compression and conversation compaction
+ * @param usage        every model call this run made, summed — tokens (cached ones too) and estimated cost —
+ *                     including planning, answer formatting, history compression, conversation compaction,
+ *                     embeddings, and the calls of runs it delegated to (agents started from its tools)
  * @param structuredAnswer the final answer as data matching {@code LoopRequest.answerSchema}; {@code null}
  *                     when no schema was requested, the run stopped early, or the conversion failed
  *                     (a warning says so)

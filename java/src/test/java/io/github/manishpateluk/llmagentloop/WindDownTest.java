@@ -293,16 +293,16 @@ class WindDownTest {
                 .isEqualTo(Duration.ofSeconds(90));
     }
 
+    /** How many limit warnings a call carries: at the start of its prompt, and (never) anywhere in its history. */
     static long limitWarnings(Request request) {
-        return request.getHistory().stream()
-                .filter(m -> m.getRole() == Role.SYSTEM && m.getContent().startsWith(AgentLoop.LIMIT_WARNING_PREFIX))
+        return (request.getPrompt().startsWith(AgentLoop.LIMIT_WARNING_PREFIX) ? 1 : 0) + request.getHistory().stream()
+                .filter(m -> m.getContent() != null && m.getContent().contains(AgentLoop.LIMIT_WARNING_PREFIX))
                 .count();
     }
 
     private static String warningText(Request request) {
-        return request.getHistory().stream()
-                .filter(m -> m.getRole() == Role.SYSTEM && m.getContent().startsWith(AgentLoop.LIMIT_WARNING_PREFIX))
-                .map(Message::getContent).findFirst().orElseThrow();
+        assertThat(request.getPrompt()).startsWith(AgentLoop.LIMIT_WARNING_PREFIX);
+        return request.getPrompt();
     }
 
     private static AgentProfile steps(int maxSteps) {

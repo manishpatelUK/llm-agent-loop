@@ -47,16 +47,12 @@ final class StructuralCompactionStrategy implements CompressionStrategy {
     }
 
     /**
-     * Preserves {@code toolCalls}/{@code toolCallId} across the rewrite — losing either would
-     * silently regress a native tool-call/tool-result turn back to flattened text once it's
-     * compressed (see {@code Message}'s class-level doc in llm-router).
+     * Preserves {@code toolCalls}/{@code toolCallId} and {@code attachments} across the rewrite —
+     * losing the first two would silently regress a native tool-call/tool-result turn back to
+     * flattened text once it's compressed (see {@code Message}'s class-level doc in llm-router),
+     * and losing the last would hide a file the model was shown.
      */
     private static Message withContent(Message message, String content) {
-        return Message.builder()
-                .role(message.getRole())
-                .content(content)
-                .toolCalls(message.getToolCalls())
-                .toolCallId(message.getToolCallId())
-                .build();
+        return message.toBuilder().content(content).build();
     }
 }
