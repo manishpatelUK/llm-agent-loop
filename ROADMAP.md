@@ -14,6 +14,13 @@ far. Remove an item once it ships (and record it in the README's Status section)
   memory. Still to do: ready-made production `VectorIndex`es (pgvector first), reranking, OCR so scanned PDFs and images become
   searchable, spreadsheet indexing, and searching tenant-wide and user-level knowledge together
   (see "Layered knowledge" below).
+- **Local embeddings.** Every step that recalls memory, and every document indexed, calls a hosted
+  embeddings API (OpenAI's `text-embedding-3-small` by default), paying for each call and its round
+  trip. Direction: an optional module (its own artifact, so the core doesn't pull in a model runtime)
+  with an `Embedder` that runs a small sentence-transformers model in-process through ONNX Runtime and
+  a Hugging Face tokenizer, metered as tokens at no cost. Switching models means re-indexing, since
+  `Embeddings.model()` keeps vectors from different models apart. The same runtime could later serve
+  a local reranker or a ready-made `ContentScreener` classifier.
 - **Background, scheduled and resumable work.** Runs live on in-process virtual threads: nothing
   survives a restart, nothing runs on a schedule, and a run waiting in `ask_human` is lost on
   redeploy. Needs a persistent task queue, a scheduler interface, and checkpoints so a waiting run
