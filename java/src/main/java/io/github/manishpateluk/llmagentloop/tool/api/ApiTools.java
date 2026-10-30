@@ -13,20 +13,14 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
+import java.util.AbstractMap;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -36,7 +30,8 @@ import java.util.TreeSet;
  * or any REST API without writing a tool per endpoint.
  *
  * <pre>{@code
- * registry.register(ApiTools.request(List.of(stripe, crm)));
+ * registry.register(ApiTools.request(List.of(stripe, crm)));        // the same connections for every run
+ * registry.registerAll(ApiTools.all(scope -> connectionsFor(scope)));  // or each tenant's own, looked up per run
  * }</pre>
  *
  * <p>The model chooses a connection, method and path; the tool builds the URL under the
@@ -44,188 +39,253 @@ import java.util.TreeSet;
  * responses come back as ordinary results so the model can correct itself. Being unable to reach
  * the API at all (connection refused, timeout) is an infrastructure failure and ends the run.
  * Redirects are not followed: a 3xx comes back with its {@code Location}.
+ *
+ * <p>With a fixed list, the connections are named in the tool's description. With a
+ * {@link ConnectionSource}, they can differ per run, so the tool definitions stay the same for
+ * everyone (and cacheable) and the model lists the run's connections with {@code api_connections}.
  */
 public final class ApiTools {
 
     public static final String REQUEST = "api_request";
+    public static final String CONNECTIONS = "api_connections";
+    public static final String DESCRIBE = "api_describe";
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
     /** Headers the model's response view never shows — they can carry session tokens. */
     private static final Set<String> HIDDEN_RESPONSE_HEADERS = Set.of("set-cookie", "authorization", "www-authenticate");
+    private static final RegisteredTool.WriteCheck WRITES = (args, context) -> {
+        Object method = args.get("method");
+        return !ApiConnection.READ_METHODS.contains(method == null ? "" : method.toString().toUpperCase(Locale.ROOT));
+    };
 
     private ApiTools() {
     }
 
+    /** {@code api_request} over a fixed set of connections, listed in its description. */
     public static RegisteredTool request(List<ApiConnection> connections) {
         if (connections == null || connections.isEmpty()) {
             throw new IllegalArgumentException("At least one connection is required");
         }
-        Map<String, ApiConnection> byName = new LinkedHashMap<>();
+        ConnectionSource source = ConnectionSource.of(connections);
         Set<String> methods = new TreeSet<>();
         StringBuilder roster = new StringBuilder();
         for (ApiConnection connection : connections) {
-            if (byName.put(connection.name(), connection) != null) {
-                throw new IllegalArgumentException("Duplicate connection name: " + connection.name());
-            }
             methods.addAll(connection.allowedMethods());
-            roster.append("\n- ").append(connection.name());
-            if (!connection.description().isBlank()) {
-                roster.append(": ").append(connection.description());
-            }
-            roster.append(" (methods: ").append(String.join(", ", new TreeSet<>(connection.allowedMethods())))
-                    .append("; paths: ").append(String.join(", ", connection.allowedPaths())).append(')');
+            roster.append("\n- ").append(summary(connection));
         }
-
-        HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
+        List<String> names = connections.stream().map(ApiConnection::name).toList();
         String description = "Call an HTTP API through a pre-configured connection; authentication is "
                 + "handled for you. Paths are relative to the connection's base URL. Use 'select' to "
                 + "return just part of a large JSON response. Connections:" + roster;
+        return request(source, description, ToolSchemas.stringEnum("Which API.", names), List.copyOf(methods));
+    }
+
+    /**
+     * {@code api_request} over each run's own connections, looked up from its scope on every call.
+     * Register {@link #connections} too (or use {@link #all}) so the model can see what they are.
+     */
+    public static RegisteredTool request(ConnectionSource connections) {
+        String description = "Call an HTTP API through one of the connections set up for this user; "
+                + "authentication is handled for you. Call " + CONNECTIONS + " first to see the connections "
+                + "and what each allows. Paths are relative to the connection's base URL. Use 'select' to "
+                + "return just part of a large JSON response.";
+        return request(connections, description, ToolSchemas.string("Which connection, by name (see " + CONNECTIONS + ")."),
+                List.copyOf(new TreeSet<>(ApiConnection.ALL_METHODS)));
+    }
+
+    /** {@code api_connections}: the run's connections, with what each allows. */
+    public static RegisteredTool connections(ConnectionSource connections) {
+        Objects.requireNonNull(connections, "connections");
+        return new RegisteredTool(
+                ToolDefinition.builder()
+                        .name(CONNECTIONS)
+                        .description("List the API connections available to you: each one's name, what it's for, "
+                                + "and which methods and paths it allows. Use the names with " + REQUEST + ".")
+                        .parameters(ToolSchemas.object(List.of()))
+                        .build(),
+                (args, context) -> {
+                    Map<String, ApiConnection> byName = connections.byName(context.scope());
+                    if (byName.isEmpty()) {
+                        return "No API connections are set up for this user.";
+                    }
+                    StringBuilder out = new StringBuilder("Connections:");
+                    byName.values().forEach(c -> {
+                        out.append("\n- ").append(summary(c));
+                        if (c.openApiSpec() != null) {
+                            out.append(" [OpenAPI description: use " + DESCRIBE + "]");
+                        }
+                    });
+                    return out.toString();
+                });
+    }
+
+    /**
+     * {@code api_describe}: a compact, searchable list of a connection's endpoints, read from the
+     * OpenAPI description set with {@link ApiConnection.Builder#openApiSpec} — so the model needn't
+     * read HTML documentation.
+     */
+    public static RegisteredTool describe(ConnectionSource connections) {
+        Objects.requireNonNull(connections, "connections");
+        OpenApiEndpoints endpoints = new OpenApiEndpoints();
+        return new RegisteredTool(
+                ToolDefinition.builder()
+                        .name(DESCRIBE)
+                        .description("List a connection's endpoints from its OpenAPI description: method, path, "
+                                + "summary, parameters and body fields. Filter with 'query' (words matched against "
+                                + "paths, summaries and tags); page on with 'offset'.")
+                        .parameters(ToolSchemas.object(List.of("connection"),
+                                "connection", ToolSchemas.string("Which connection, by name."),
+                                "query", ToolSchemas.string("Optional words to filter endpoints by, e.g. \"invoice\"."),
+                                "offset", ToolSchemas.integer("Optional: skip this many matching endpoints.")))
+                        .build(),
+                (args, context) -> {
+                    ApiConnection connection = connection(connections, ToolArguments.requireString(args, "connection"), context);
+                    return endpoints.describe(connection, ToolArguments.optionalString(args, "query"),
+                            ToolArguments.optionalInt(args, "offset", 0, 0, 100_000), context.scope());
+                })
+                .withUntrustedOutput();
+    }
+
+    /** {@code api_connections}, {@code api_request} and {@code api_describe} over each run's own connections. */
+    public static List<RegisteredTool> all(ConnectionSource connections) {
+        return List.of(connections(connections), request(connections), describe(connections));
+    }
+
+    /** One connection as listed for the model. */
+    static String summary(ApiConnection connection) {
+        StringBuilder out = new StringBuilder(connection.name());
+        if (!connection.description().isBlank()) {
+            out.append(": ").append(connection.description());
+        }
+        out.append(" (methods: ").append(String.join(", ", new TreeSet<>(connection.allowedMethods())))
+                .append("; paths: ").append(String.join(", ", connection.allowedPaths()));
+        if (connection.bodyType() != ApiBodyType.JSON) {
+            out.append("; bodies: ").append(connection.bodyType().mediaType());
+        }
+        return out.append(')').toString();
+    }
+
+    private static RegisteredTool request(ConnectionSource source, String description, Map<String, Object> connectionSchema,
+                                          List<String> methods) {
         return new RegisteredTool(
                 ToolDefinition.builder()
                         .name(REQUEST)
                         .description(description)
                         .parameters(ToolSchemas.object(List.of("connection", "method", "path"),
-                                "connection", ToolSchemas.stringEnum("Which API.", List.copyOf(byName.keySet())),
-                                "method", ToolSchemas.stringEnum("HTTP method.", List.copyOf(methods)),
+                                "connection", connectionSchema,
+                                "method", ToolSchemas.stringEnum("HTTP method.", methods),
                                 "path", ToolSchemas.string("Path under the base URL, starting with '/', e.g. \"/customers/cus_123\". No query string."),
-                                "query", ToolSchemas.array("Query parameters.", ToolSchemas.object(List.of("name", "value"),
-                                        "name", ToolSchemas.string("Parameter name."),
-                                        "value", ToolSchemas.string("Parameter value.")))
-                                ,
-                                "body", ToolSchemas.string("Request body as JSON text, for POST/PUT/PATCH."),
+                                "query", ToolSchemas.array("Query parameters.", nameValue()),
+                                "body", ToolSchemas.string("Request body as JSON text (or plain text with content_type text/plain), for POST/PUT/PATCH."),
+                                "form", ToolSchemas.array("Form fields, for APIs that take application/x-www-form-urlencoded bodies, "
+                                        + "e.g. [{\"name\":\"email\",\"value\":\"a@b.com\"},{\"name\":\"metadata[plan]\",\"value\":\"pro\"}].", nameValue()),
+                                "content_type", ToolSchemas.stringEnum("Optional body encoding, overriding the connection's default.",
+                                        ApiBodyType.mediaTypes()),
                                 "select", ToolSchemas.string("Optional JSON Pointer into the response, e.g. \"/data/0/id\"."),
                                 "save_as", ToolSchemas.string("Optional workspace path to save the raw response body to.")))
                         .build(),
-                (args, context) -> call(client, byName, args, context))
+                (args, context) -> call(source, args, context))
                 .withUntrustedOutput()
+                .withWriteCheck(WRITES)
                 .withWorkspaceParameters(List.of("save_as"), description);
     }
 
-    private static String call(HttpClient client, Map<String, ApiConnection> byName, Map<String, Object> args, ToolContext context) {
-        String name = ToolArguments.requireString(args, "connection");
+    static Map<String, Object> nameValue() {
+        return ToolSchemas.object(List.of("name", "value"),
+                "name", ToolSchemas.string("Name."),
+                "value", ToolSchemas.string("Value."));
+    }
+
+    static ApiConnection connection(ConnectionSource source, String name, ToolContext context) {
+        Map<String, ApiConnection> byName = source.byName(context.scope());
         ApiConnection connection = byName.get(name);
         if (connection == null) {
             throw new ToolInputException("No connection called '" + name + "'; available: " + byName.keySet());
         }
+        return connection;
+    }
+
+    private static String call(ConnectionSource source, Map<String, Object> args, ToolContext context) {
+        ApiConnection connection = connection(source, ToolArguments.requireString(args, "connection"), context);
         String method = ToolArguments.requireString(args, "method").toUpperCase(Locale.ROOT);
-        if (!connection.allowedMethods().contains(method)) {
-            throw new ToolInputException(method + " isn't allowed on " + name + "; allowed: " + new TreeSet<>(connection.allowedMethods()));
-        }
+        ApiHttp.checkMethod(connection, method);
         String path = ToolArguments.requireString(args, "path").strip();
-        URI uri = resolve(connection, path, queryParameters(connection, args, context));
-
-        String body = ToolArguments.optionalString(args, "body");
-        HttpRequest.BodyPublisher publisher = HttpRequest.BodyPublishers.noBody();
-        if (body != null && !body.isBlank()) {
-            if (method.equals("GET") || method.equals("HEAD")) {
-                throw new ToolInputException(method + " requests can't have a body");
-            }
-            try {
-                JSON.readTree(body);
-            } catch (JacksonException e) {
-                throw new ToolInputException("'body' must be valid JSON: " + e.getOriginalMessage());
-            }
-            publisher = HttpRequest.BodyPublishers.ofString(body);
-        }
-
-        HttpRequest.Builder request = HttpRequest.newBuilder(uri)
-                .timeout(connection.timeout())
-                .header("Accept", "application/json, text/plain;q=0.9, */*;q=0.8")
-                .method(method, publisher);
-        if (body != null && !body.isBlank()) {
-            request.header("Content-Type", "application/json");
-        }
-        Map<String, String> headers = new LinkedHashMap<>(connection.defaultHeaders());
-        headers.putAll(connection.auth().headers(context.scope()));
-        headers.forEach(request::setHeader);
-
-        HttpResponse<byte[]> response;
-        try {
-            response = client.send(request.build(), HttpResponse.BodyHandlers.ofByteArray());
-        } catch (IOException e) {
-            throw new UncheckedIOException("api_request to connection '" + name + "' failed: " + e.getMessage(), e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("api_request to connection '" + name + "' was interrupted", e);
-        }
+        Map<String, String> query = new LinkedHashMap<>();
+        pairs(args, "query").forEach(e -> query.put(e.getKey(), e.getValue()));
+        ApiHttp.resolve(connection, path, query);   // refuse a bad path before looking at the body
+        ApiHttp.Body body = body(connection, method, args);
+        HttpResponse<byte[]> response = ApiHttp.send(connection, method, path, query, body, context.scope(), REQUEST);
         return describe(connection, method, path, response, args, context);
     }
 
-    /**
-     * The connection's base URL plus a model-supplied path, refusing anything that could leave it:
-     * a different host, {@code ..} segments (encoded or not), backslashes, or an embedded query or fragment.
-     */
-    static URI resolve(ApiConnection connection, String path, Map<String, String> query) {
-        if (!path.startsWith("/")) {
-            throw new ToolInputException("'path' must start with '/'");
+    /** The request body the arguments describe, checked against its encoding; {@code null} for none. */
+    private static ApiHttp.Body body(ApiConnection connection, String method, Map<String, Object> args) {
+        String text = ToolArguments.optionalString(args, "body");
+        boolean hasText = text != null && !text.isBlank();
+        List<Map.Entry<String, String>> form = args.get("form") == null ? null : pairs(args, "form");
+        boolean hasForm = form != null && !form.isEmpty();
+        if (!hasText && !hasForm) {
+            return null;
         }
-        if (path.contains("?") || path.contains("#")) {
-            throw new ToolInputException("'path' must not contain '?' or '#'; pass query parameters in 'query'");
+        if (ApiConnection.READ_METHODS.contains(method)) {
+            throw new ToolInputException(method + " requests can't have a body");
         }
-        if (path.contains("\\") || path.contains("//") || path.chars().anyMatch(c -> c < 0x20 || c == 0x7F)) {
-            throw new ToolInputException("'path' contains characters that aren't allowed");
+        String contentType = ToolArguments.optionalString(args, "content_type");
+        ApiBodyType type;
+        if (contentType != null && !contentType.isBlank()) {
+            type = ApiBodyType.ofMediaType(contentType).orElseThrow(() -> new ToolInputException(
+                    "'content_type' must be one of " + ApiBodyType.mediaTypes()));
+        } else {
+            type = hasForm ? ApiBodyType.FORM : connection.bodyType();
         }
-        URI base = connection.baseUrl();
-        StringBuilder url = new StringBuilder(base.toString()).append(path);
-        if (!query.isEmpty()) {
-            url.append('?');
-            boolean first = true;
-            for (Map.Entry<String, String> entry : query.entrySet()) {
-                if (!first) {
-                    url.append('&');
+        return switch (type) {
+            case FORM -> {
+                if (hasText) {
+                    throw new ToolInputException("Form bodies are given as 'form' name/value pairs, not 'body' text"
+                            + (hasForm ? "" : "; or set content_type to send 'body' as JSON or plain text"));
                 }
-                url.append(encode(entry.getKey())).append('=').append(encode(entry.getValue()));
-                first = false;
+                yield new ApiHttp.Body(type, ApiHttp.formEncode(form));
             }
-        }
-        URI uri;
-        try {
-            uri = new URI(url.toString());
-        } catch (URISyntaxException e) {
-            throw new ToolInputException("Invalid path (characters may need percent-encoding): " + path);
-        }
-        String decodedPath = uri.getPath() == null ? "" : uri.getPath();
-        for (String segment : decodedPath.split("/")) {
-            if (segment.equals("..") || segment.equals(".")) {
-                throw new ToolInputException("'path' must not contain '.' or '..' segments");
+            case JSON, TEXT -> {
+                if (hasForm) {
+                    throw new ToolInputException("'form' fields need content_type " + ApiBodyType.FORM.mediaType()
+                            + "; use 'body' for " + type.mediaType());
+                }
+                if (type == ApiBodyType.JSON) {
+                    try {
+                        JSON.readTree(text);
+                    } catch (JacksonException e) {
+                        throw new ToolInputException("'body' must be valid JSON: " + e.getOriginalMessage());
+                    }
+                }
+                yield new ApiHttp.Body(type, text);
             }
-        }
-        String basePath = base.getPath() == null ? "" : base.getPath();
-        if (!uri.getScheme().equalsIgnoreCase(base.getScheme()) || !uri.getHost().equalsIgnoreCase(base.getHost())
-                || uri.getPort() != base.getPort() || !decodedPath.startsWith(basePath)) {
-            throw new ToolInputException("'path' must stay under " + base);
-        }
-        String relative = decodedPath.substring(basePath.length());
-        if (!connection.pathAllowed(relative.isEmpty() ? "/" : relative)) {
-            throw new ToolInputException(relative + " isn't an allowed path on " + connection.name()
-                    + "; allowed: " + connection.allowedPaths());
-        }
-        return uri;
+        };
     }
 
-    private static Map<String, String> queryParameters(ApiConnection connection, Map<String, Object> args, ToolContext context) {
-        Map<String, String> query = new LinkedHashMap<>();
-        Object value = args.get("query");
-        if (value != null) {
-            if (!(value instanceof List<?> list)) {
-                throw new ToolInputException("'query' must be a list of {name, value} objects");
-            }
-            for (Object item : list) {
-                if (!(item instanceof Map<?, ?> pair) || !(pair.get("name") instanceof String key) || key.isBlank()) {
-                    throw new ToolInputException("Each 'query' entry needs a 'name' and a 'value'");
-                }
-                Object v = pair.get("value");
-                query.put(key, v == null ? "" : String.valueOf(v));
-            }
+    /** A list of {@code {name, value}} arguments, in order; empty when absent. */
+    static List<Map.Entry<String, String>> pairs(Map<String, Object> args, String name) {
+        Object value = args.get(name);
+        List<Map.Entry<String, String>> pairs = new ArrayList<>();
+        if (value == null) {
+            return pairs;
         }
-        query.putAll(connection.auth().queryParameters(context.scope()));
-        return query;
+        if (!(value instanceof List<?> list)) {
+            throw new ToolInputException("'" + name + "' must be a list of {name, value} objects");
+        }
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> pair) || !(pair.get("name") instanceof String key) || key.isBlank()) {
+                throw new ToolInputException("Each '" + name + "' entry needs a 'name' and a 'value'");
+            }
+            Object v = pair.get("value");
+            pairs.add(new AbstractMap.SimpleImmutableEntry<>(key, v == null ? "" : String.valueOf(v)));
+        }
+        return pairs;
     }
 
     private static String describe(ApiConnection connection, String method, String path, HttpResponse<byte[]> response,
                                    Map<String, Object> args, ToolContext context) {
-        String contentType = response.headers().firstValue("Content-Type").orElse("");
-        String mediaType = contentType.split(";")[0].strip().toLowerCase(Locale.ROOT);
+        String mediaType = ApiHttp.mediaType(response);
         StringBuilder out = new StringBuilder("HTTP ").append(response.statusCode()).append(' ').append(method).append(' ').append(path).append('\n');
         if (!mediaType.isEmpty()) {
             out.append("Content-Type: ").append(mediaType).append('\n');
@@ -258,7 +318,7 @@ public final class ApiTools {
             }
             return out.append(")").toString();
         }
-        String text = new String(bytes, charset(contentType));
+        String text = ApiHttp.text(response);
         String select = ToolArguments.optionalString(args, "select");
         if (json) {
             try {
@@ -278,31 +338,15 @@ public final class ApiTools {
             }
         }
         out.append('\n');
-        if (text.length() > connection.maxResponseChars()) {
-            out.append(text, 0, connection.maxResponseChars())
-                    .append("\n[Response cut off at ").append(connection.maxResponseChars()).append(" of ").append(text.length())
-                    .append(" characters; use 'select', query parameters such as a page size, or save_as.]");
-        } else {
-            out.append(text);
-        }
-        return out.toString();
+        return out.append(capped(text, connection.maxResponseChars(),
+                "use 'select', query parameters such as a page size, or save_as")).toString();
     }
 
-    private static String encode(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
-    }
-
-    private static Charset charset(String contentType) {
-        for (String part : contentType.split(";")) {
-            String p = part.strip();
-            if (p.toLowerCase(Locale.ROOT).startsWith("charset=")) {
-                try {
-                    return Charset.forName(p.substring(8).replace("\"", "").strip());
-                } catch (RuntimeException e) {
-                    return StandardCharsets.UTF_8;
-                }
-            }
+    /** {@code text}, cut off at {@code max} characters with a note saying how to get less. */
+    static String capped(String text, int max, String hint) {
+        if (text.length() <= max) {
+            return text;
         }
-        return StandardCharsets.UTF_8;
+        return text.substring(0, max) + "\n[Response cut off at " + max + " of " + text.length() + " characters; " + hint + ".]";
     }
 }

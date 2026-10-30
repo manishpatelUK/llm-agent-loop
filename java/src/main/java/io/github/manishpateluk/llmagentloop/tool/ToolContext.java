@@ -6,10 +6,12 @@ import io.github.manishpateluk.llmagentloop.memory.ScopedMemory;
 import io.github.manishpateluk.llmagentloop.search.KnowledgeSearch;
 import io.github.manishpateluk.llmagentloop.workspace.ScopedWorkspace;
 import io.github.manishpateluk.llmagentloop.workspace.WorkspaceFile;
+import io.github.manishpateluk.llmrouter.model.ToolCall;
 import io.github.manishpateluk.llmrouter.config.RouterConfig;
 
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -79,6 +81,11 @@ public record ToolContext(
         /** The run's {@code LoopRequest.tags}; none if it has none. */
         default Map<String, String> tags() {
             return Map.of();
+        }
+
+        /** The run's registered tool called {@code name}, behind {@link ToolContext#writes}; empty if there's none. */
+        default Optional<RegisteredTool> tool(String name) {
+            return Optional.empty();
         }
 
         /** The run's tool state behind {@link ToolContext#runState}; a context without a run gets a fresh, unshared map. */
@@ -172,5 +179,25 @@ public record ToolContext(
         Objects.requireNonNull(key, "key");
         Objects.requireNonNull(initial, "initial");
         return (T) run.state().computeIfAbsent(key, k -> initial.get());
+    }
+
+    /**
+     * Whether {@code call} would change something outside the run — create, update or delete data
+     * in another system — as its tool declares ({@link RegisteredTool#withWriteCheck}): e.g. an
+     * {@code api_request} other than GET/HEAD, or {@code procedure_run} of a procedure that writes.
+     * The one question an approval interceptor needs to ask. {@code false} for tools that declare
+     * nothing and in a context not attached to a run; {@code true} if the check itself fails.
+     */
+    public boolean writes(ToolCall call) {
+        Objects.requireNonNull(call, "call");
+        Optional<RegisteredTool> tool = run.tool(call.getName());
+        if (tool.isEmpty()) {
+            return false;
+        }
+        try {
+            return tool.get().writes(call.getArguments(), this);
+        } catch (RuntimeException e) {
+            return true;
+        }
     }
 }

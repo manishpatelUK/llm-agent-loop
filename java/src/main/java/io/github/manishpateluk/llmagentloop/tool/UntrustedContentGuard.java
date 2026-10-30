@@ -20,8 +20,10 @@ import java.util.Set;
  * }</pre>
  *
  * <p>Guards {@link #DEFAULT_TOOLS} — sending email, creating calendar events, and {@code api_request}
- * writes (anything but GET/HEAD) — plus any added with {@link #alsoFor}. Runs that haven't read
- * outside content are never affected.
+ * writes (anything but GET/HEAD) — plus any added with {@link #alsoFor}, and every call that
+ * {@link ToolContext#writes} says writes (its tool declares it with
+ * {@code RegisteredTool.withWriteCheck}: e.g. {@code procedure_run} of a procedure that writes).
+ * Runs that haven't read outside content are never affected.
  */
 public final class UntrustedContentGuard implements ToolInterceptor {
 
@@ -61,7 +63,7 @@ public final class UntrustedContentGuard implements ToolInterceptor {
 
     @Override
     public ToolDecision before(ToolCall call, ToolContext context) {
-        if (!guarded(call) || context.untrustedSources().isEmpty()) {
+        if (context.untrustedSources().isEmpty() || !(guarded(call) || context.writes(call))) {
             return ToolDecision.proceed();
         }
         if (approver.approve(call, context)) {

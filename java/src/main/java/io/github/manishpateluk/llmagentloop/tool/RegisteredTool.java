@@ -28,10 +28,20 @@ import java.util.Optional;
  * @param definitionWithoutWorkspace what the model is offered instead of {@code definition} when the loop has
  *                                   no workspace — the definition minus its workspace-only parameters; {@code null}
  *                                   if nothing about the tool depends on one. See {@link #withWorkspaceParameters}.
+ * @param writeCheck                 says whether a call would change something outside the run (create, update or
+ *                                   delete data in another system); {@code null} means the tool never does. Read
+ *                                   through {@code ToolContext.writes(call)}, e.g. by {@code UntrustedContentGuard}
+ *                                   and approval interceptors. See {@link #withWriteCheck}.
  */
 public record RegisteredTool(
         ToolDefinition definition, ToolHandler handler, Duration timeout, boolean untrustedOutput,
-        boolean requiresWorkspace, ToolDefinition definitionWithoutWorkspace) {
+        boolean requiresWorkspace, ToolDefinition definitionWithoutWorkspace, WriteCheck writeCheck) {
+
+    /** Decides whether one call of a tool writes, from its arguments; may look things up (e.g. a saved procedure). */
+    @FunctionalInterface
+    public interface WriteCheck {
+        boolean writes(Map<String, Object> arguments, ToolContext context);
+    }
 
     public RegisteredTool {
         Objects.requireNonNull(definition, "definition");
@@ -39,6 +49,11 @@ public record RegisteredTool(
         if (timeout != null && (timeout.isZero() || timeout.isNegative())) {
             throw new IllegalArgumentException("timeout must be positive when given");
         }
+    }
+
+    public RegisteredTool(ToolDefinition definition, ToolHandler handler, Duration timeout, boolean untrustedOutput,
+                          boolean requiresWorkspace, ToolDefinition definitionWithoutWorkspace) {
+        this(definition, handler, timeout, untrustedOutput, requiresWorkspace, definitionWithoutWorkspace, null);
     }
 
     /** With the loop's default timeout. */
@@ -57,17 +72,17 @@ public record RegisteredTool(
     /** This tool with its own timeout — longer for tools that legitimately wait (a human, another agent), shorter for quick ones. */
     public RegisteredTool withTimeout(Duration timeout) {
         return new RegisteredTool(definition, handler, Objects.requireNonNull(timeout, "timeout"), untrustedOutput,
-                requiresWorkspace, definitionWithoutWorkspace);
+                requiresWorkspace, definitionWithoutWorkspace, writeCheck);
     }
 
     /** This tool, marked as returning outside content — see {@link #untrustedOutput()}. */
     public RegisteredTool withUntrustedOutput() {
-        return new RegisteredTool(definition, handler, timeout, true, requiresWorkspace, definitionWithoutWorkspace);
+        return new RegisteredTool(definition, handler, timeout, true, requiresWorkspace, definitionWithoutWorkspace, writeCheck);
     }
 
     /** This tool, offered to the model only when the loop has a workspace — for tools that only work on workspace files. */
     public RegisteredTool withRequiresWorkspace() {
-        return new RegisteredTool(definition, handler, timeout, untrustedOutput, true, definitionWithoutWorkspace);
+        return new RegisteredTool(definition, handler, timeout, untrustedOutput, true, definitionWithoutWorkspace, writeCheck);
     }
 
     /**
@@ -99,7 +114,22 @@ public record RegisteredTool(
                 .description(descriptionWithoutThem)
                 .parameters(stripped)
                 .build();
-        return new RegisteredTool(definition, handler, timeout, untrustedOutput, requiresWorkspace, without);
+        return new RegisteredTool(definition, handler, timeout, untrustedOutput, requiresWorkspace, without, writeCheck);
+    }
+
+    /**
+     * This tool, declaring which of its calls write: change data in another system, such as an
+     * {@code api_request} POST. {@code UntrustedContentGuard} holds such calls back once a run has
+     * read outside content, and approval interceptors can ask {@code ToolContext.writes(call)}.
+     */
+    public RegisteredTool withWriteCheck(WriteCheck writeCheck) {
+        return new RegisteredTool(definition, handler, timeout, untrustedOutput, requiresWorkspace, definitionWithoutWorkspace,
+                Objects.requireNonNull(writeCheck, "writeCheck"));
+    }
+
+    /** Whether this call of the tool writes, per its {@link #writeCheck()}; {@code false} for a tool without one. */
+    public boolean writes(Map<String, Object> arguments, ToolContext context) {
+        return writeCheck != null && writeCheck.writes(arguments == null ? Map.of() : arguments, context);
     }
 
     /** What the model is offered, given whether the loop has a workspace; empty if the tool isn't offered at all. */

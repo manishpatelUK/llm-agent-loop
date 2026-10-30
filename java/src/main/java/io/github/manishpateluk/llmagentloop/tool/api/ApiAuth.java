@@ -12,6 +12,9 @@ import java.util.function.Function;
  * How an {@link ApiConnection} authenticates, resolved per run from its {@link Scope} — so each
  * tenant (or user) can use its own credentials. Credentials are added to the outgoing request by
  * the tool; they never appear in the model's prompt, history, or tool results.
+ *
+ * <p>For OAuth2 APIs, {@link OAuth2} fetches, caches and refreshes access tokens (client
+ * credentials, or a refresh token your app keeps).
  */
 public interface ApiAuth {
 
@@ -24,6 +27,15 @@ public interface ApiAuth {
     /** Query parameters to add to every request made for {@code scope}, for APIs that take a key that way. */
     default Map<String, String> queryParameters(Scope scope) {
         return Map.of();
+    }
+
+    /**
+     * Called when the API answered {@code 401 Unauthorized} for {@code scope}: return {@code true}
+     * after renewing the credentials (e.g. dropping a cached access token) to have the request sent
+     * once more with fresh {@link #headers}. Defaults to {@code false}: the 401 goes back to the model.
+     */
+    default boolean renewAfterUnauthorized(Scope scope) {
+        return false;
     }
 
     /** {@code Authorization: Bearer <token>}. */

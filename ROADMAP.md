@@ -21,6 +21,18 @@ far. Remove an item once it ships (and record it in the README's Status section)
   a Hugging Face tokenizer, metered as tokens at no cost. Switching models means re-indexing, since
   `Embeddings.model()` keeps vectors from different models apart. The same runtime could later serve
   a local reranker or a ready-made `ContentScreener` classifier.
+- **More from API procedures.** Connections per run (`ConnectionSource`), form and text bodies,
+  `OAuth2`, `api_describe` and saved procedures (`procedure_*`, `ProcedureRunner`) ship. Still to do:
+  - **Richer steps:** conditions ("create the contact if the search found none"), loops over a
+    list, pagination, and retries on 429 with `Retry-After`.
+  - **Richer parameters:** arrays and objects (only scalars today).
+  - **Step headers:** headers set per step, such as idempotency keys.
+  - **Typed tools:** each saved procedure offered as a tool of its own, typed from its input schema.
+  - **Per-procedure approval:** a policy such as "approved once, runs unattended", kept with the
+    procedure, so a confirmation step needn't ask every time.
+  - **YAML** OpenAPI descriptions, which would need a YAML parser as a new dependency.
+  - **More OAuth2:** a ready-made authorization-code helper (state, PKCE, code exchange) for apps that
+    connect accounts.
 - **Background, scheduled and resumable work.** Runs live on in-process virtual threads: nothing
   survives a restart, nothing runs on a schedule, and a run waiting in `ask_human` is lost on
   redeploy. Needs a persistent task queue, a scheduler interface, and checkpoints so a waiting run
@@ -92,4 +104,8 @@ Found running long background reports (a 10,000-token report in one answer) in a
 - `web_fetch`'s private-network check can be bypassed by DNS rebinding; deployments that need a hard
   guarantee should also block private ranges at an egress proxy or firewall.
 - `McpClient` supports tools only — not MCP resources, prompts or sampling.
-- `api_request` has no OpenAPI-driven generation of one typed tool per endpoint yet.
+- A failed step in a procedure doesn't undo the steps before it: their changes stay made.
+  `ProcedureResult.writesMade()` lists them, and the model is told not to run the whole procedure
+  again.
+- `OAuth2` drops the cached token after any 401. When several runs share a token, one stale
+  request can therefore cause one extra token fetch.

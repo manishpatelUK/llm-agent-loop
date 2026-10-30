@@ -1445,6 +1445,11 @@ public final class AgentLoop {
                 public Map<String, String> tags() {
                     return request.tags();
                 }
+
+                @Override
+                public Optional<RegisteredTool> tool(String name) {
+                    return tools.find(name);
+                }
             });
         }
 

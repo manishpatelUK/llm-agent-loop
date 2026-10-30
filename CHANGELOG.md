@@ -3,6 +3,69 @@
 Changes that affect callers of `llm-agent-loop`, newest first: what changed, and what calling code
 needs to do, if anything.
 
+## Java 1.0.11 — on `llm-router` 1.0.14
+
+### Agents that learn unfamiliar REST APIs
+
+An agent can now do a task against an API nobody wrote an integration for, and save what worked as
+a procedure that it, or your code, runs again later.
+
+- **Connections per run: `ConnectionSource`.** `ApiTools.request(ConnectionSource)` looks a run's
+  connections up from its `Scope` on every call, so each tenant can have its own, added at runtime.
+  The tool definitions then name no connections (the same for every tenant, and cacheable), and the
+  model lists the run's connections with the new **`api_connections`** tool.
+  `ApiTools.all(source)` gives `api_connections`, `api_request` and `api_describe`.
+  `ApiTools.request(List<ApiConnection>)` works as before.
+- **Form and text bodies.** `api_request` has two new optional arguments: `form` (name/value pairs,
+  sent as `application/x-www-form-urlencoded`) and `content_type` (`application/json`, the form type,
+  or `text/plain`). `ApiConnection.Builder.bodyType(ApiBodyType.FORM)` sets a connection's default,
+  as Stripe needs. JSON bodies must still parse. `Content-Type` now carries `charset=utf-8`.
+- **OAuth2.** `OAuth2.clientCredentials(...)` and `OAuth2.refreshToken(...)` are `ApiAuth`s that:
+  - cache access tokens per scope (the tenant by default);
+  - refresh them shortly before they expire;
+  - store rotated refresh tokens through your `OAuth2.RefreshTokens`;
+  - keep secrets out of exception messages.
+
+  New `ApiAuth.renewAfterUnauthorized(scope)` (default `false`) lets any auth renew and have the
+  request retried once after a 401; `OAuth2` does.
+- **`api_describe`.** A compact, searchable list of a connection's endpoints, read from the OpenAPI 3
+  or Swagger 2 (JSON) description set with `ApiConnection.Builder.openApiSpec(url)`.
+- **Procedures.** `Procedure` is a named, versioned recipe against one connection:
+  - typed parameters;
+  - steps whose path, query, body and form are `{{param}}` / `{{step.value}}` templates;
+  - JSON Pointer `keep`s for the values later steps need;
+  - an optional output template;
+  - `writes()`.
+
+  Around it:
+  - `ProcedureStore` (with `InMemoryProcedureStore`) keeps every version.
+  - `ProcedureRunner` runs a procedure in code, under the same connection, path and auth rules as
+    `api_request`.
+  - `ProcedureTools.all(source, store)` gives the model `procedure_list`, `procedure_get`,
+    `procedure_run` and `procedure_save`.
+  - `Skills.apiProcedures(source, store)` bundles them with the API tools, `web_fetch`, and guidance
+    on how to learn an API, explore it safely, save procedures and repair them.
+- **Which calls write.**
+  - New `RegisteredTool.withWriteCheck(...)` lets a tool declare which of its calls change something
+    in another system.
+  - New `ToolContext.writes(call)` asks the tool.
+  - `api_request` declares its non-GET/HEAD calls, `procedure_run` declares procedures that write,
+    and `procedure_save` declares saving one.
+  - `UntrustedContentGuard` now also holds back every call that writes, as well as the tools it named
+    before.
+
+### Upgrading from 1.0.10
+
+No code changes are needed. To do:
+
+- **`RegisteredTool` has a new last component, `writeCheck`.** The old constructors remain. Code
+  that calls the 6-argument canonical constructor still compiles (it's kept as an overload). Code
+  that deconstructs the record with a record pattern needs the extra component.
+- **Approval hooks** can use `context.writes(call)` instead of matching tool names and methods,
+  which also covers `procedure_run`.
+- **A custom `ToolContext.RunAccess`** (rare; tests) can implement the new `tool(name)` so that
+  `writes(call)` works with it. Without it, nothing counts as a write.
+
 ## Java 1.0.10 (unreleased) — on `llm-router` 1.0.14
 
 ### Prompt caching that works for agent loops, on every provider

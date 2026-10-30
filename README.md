@@ -219,7 +219,13 @@ Implemented so far (Java):
     `web_search` over a `SearchProvider` (`BraveSearch`, `TavilySearch`);
   - `ApiTools` — `api_request` over implementor-registered `ApiConnection`s: credentials resolved
     per scope and never shown to the model, paths confined to the base URL, read-only unless a
-    connection allows writes, optional path allow-lists, JSON Pointer `select`;
+    connection allows writes, optional path allow-lists, JSON Pointer `select`, JSON, form and text
+    bodies; connections fixed or looked up per run from a `ConnectionSource` (listed by
+    `api_connections`), `api_describe` for OpenAPI descriptions, and `OAuth2` client-credentials and
+    refresh-token auth with cached, renewed tokens;
+  - `ProcedureTools` — `procedure_list`/`get`/`run`/`save`: tasks the agent worked out against an
+    API, saved as versioned, parameterised `Procedure`s in a `ProcedureStore` and run again in code
+    by a `ProcedureRunner`; `Skills.apiProcedures` teaches the method;
   - `SpreadsheetTools` (Apache POI) — `spreadsheet_create`/`read`/`update`, with every formula
     evaluated before saving so errors reach the model, not the user, and column/bar/line/pie charts;
   - `DocumentTools.create` and `PresentationTools` — `document_create` (Markdown to Word or PDF)

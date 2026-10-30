@@ -104,7 +104,7 @@ AgentLoopResult result = runtime.runAndWait(assistant, userMessage, scope);
 - **Front matter can choose models.** `models: anthropic/claude-sonnet-5-5, openai` gives a preference order; a provider on its own lets the router pick its model. `thinking_level`, `cost_optimized` and `fallback` (`same_depth`, the default, or `finish` to step down a thinking level rather than fail) can also be set, or use `Agent.builder(md).routerConfig(...)`.
 - **The Markdown body becomes the agent's instructions, verbatim.** Front matter is optional apart from `name`, which must match `^[a-zA-Z0-9_-]{1,64}$` because other agents delegate by name. It can also be set with `Agent.builder(md).name(...)`.
 - **Your own front matter keys are kept.** Keys the library doesn't use (`skills:`, `silos:`, anything) end up in `agent.metadata()`, an ordered, unmodifiable `Map<String, String>` with lower-cased keys. The library otherwise ignores them. Known keys are still validated, so `plan_mode: sometimes` fails. To catch misspelled key names in definitions that carry no data of yours, call `Agent.builder(md).strictFrontMatter()`, which rejects unknown keys.
-- **Skills** bundle tools with guidance. The ready-made ones in `Skills` are `memory()`, `files()`, `spreadsheets()`, `dataAnalysis()`, `knowledge()`, `web(...)`, `email(...)`, `calendar(...)` and `askingTheUser(...)`. You can make your own with `new Skill(name, description, instructions, tools)`. An instruction-only skill (no tools) is also how to give an agent reference knowledge.
+- **Skills** bundle tools with guidance. The ready-made ones in `Skills` are `memory()`, `files()`, `spreadsheets()`, `dataAnalysis()`, `knowledge()`, `web(...)`, `email(...)`, `calendar(...)`, `apiProcedures(...)` and `askingTheUser(...)`. You can make your own with `new Skill(name, description, instructions, tools)`. An instruction-only skill (no tools) is also how to give an agent reference knowledge.
 - **Inlined or on demand.** `.skill(...)` inlines a skill's instructions in the system prompt on every call. `.onDemandSkill(...)` / `.onDemandSkills(...)` lists only each skill's name and the first line of its description, and adds a `load_skill` tool the model calls to read a skill's full instructions when it needs them. Use on-demand skills when an agent has many skills or long reference documents. You can mix both on one agent.
   - Each skill is loaded at most once per run: loading it again returns a short reminder that it's already in the conversation.
   - Names match case-insensitively, and an unknown name is a fixable error listing the valid names.
@@ -452,6 +452,12 @@ AgentLoop.builder().toolInterceptor(new ToolInterceptor() {
 - **Coverage.** Registered tools and caller-resolved unregistered tools. Not the loop's own `report_complete` and `spawn_sub_task`.
 - **Failures.** `failed(...)` is called when a tool throws something other than `ToolInputException`. The model then gets an `"Error: <tool> failed: ..."` result (which `after(...)` also sees) and the run carries on. An exception thrown by an interceptor itself ends the run; return `ToolDecision.refuse(...)` to block a call instead.
 - **Delegated agents.** Loops made with `withTools(...)`, and so every agent on an `AgentRuntime`, keep the base loop's interceptors.
+- **Which calls write.** `context.writes(call)` says whether a call would change something in another system. Each tool declares this with `RegisteredTool.withWriteCheck((arguments, context) -> ...)`. The built-in ones that write are:
+  - `api_request` with any method but GET or HEAD;
+  - `procedure_run` of a procedure that writes;
+  - `procedure_save` of one.
+
+  It's the one question a confirmation step needs to ask, whichever tool made the call. A check that throws counts as a write. Tools that declare nothing never write.
 
 ### Tool timeouts
 
@@ -591,7 +597,7 @@ Web pages, emails, documents and API responses can contain text written to manip
 
 - **Labelling (on by default).** Results of tools marked `untrustedOutput`, and the text of attachments, are wrapped in markers: `[[untrusted-content <id> source=web_fetch]] ... [[end untrusted-content <id>]]`. The system prompt tells the model to treat anything inside the markers as data, never as instructions. The id is secret (an HMAC of the conversation's scope), so content can't fake its own end marker; it's the same for every run in a conversation, so the system prompt stays cacheable from turn to turn. Each loop has a random key unless you set one with `.untrustedMarkerSecret(secret)` — do, with the same value on every instance, when several instances serve the same conversations or you restart often, or each will miss the cache once per conversation. Built-in tools that return outside content are already marked, including `web_fetch`, `web_search`, `email_search`/`read`, `calendar_list_events`, `workspace_read`/`search`, `document_read`, `spreadsheet_read`, `data_query`, `api_request`, `knowledge_search` and MCP tools. Mark your own with `RegisteredTool.withUntrustedOutput()`. Switch labelling off with `.labelUntrustedContent(false)`.
 - **Taint tracking.** `ToolContext.untrustedSources()` lists where outside content has entered the run so far, e.g. `[web_fetch, attachments]`. Interceptors can use it.
-- **`UntrustedContentGuard` (opt-in).** Once outside content has entered a run, this interceptor holds back high-impact actions: `email_send`, `calendar_create_event`, and `api_request` calls other than GET or HEAD. A refused call goes back to the model as "This action wasn't approved", so it can tell the user instead.
+- **`UntrustedContentGuard` (opt-in).** Once outside content has entered a run, this interceptor holds back high-impact actions: `email_send`, `calendar_create_event`, and every call whose tool says it writes (`context.writes(call)`; see "Which calls write"). These include `api_request` calls other than GET or HEAD, and `procedure_run` or `procedure_save` of a procedure that writes. A refused call goes back to the model as "This action wasn't approved", so it can tell the user instead.
 
   ```java
   AgentLoop.builder()
@@ -659,6 +665,8 @@ Every tool is a `RegisteredTool`: register it on a `ToolRegistry` (`register`/`r
 | `web_fetch` | `tool.web.WebTools.fetch()` | — |
 | `web_search` | `tool.web.WebTools.search(provider)` | a `SearchProvider`: `BraveSearch` or `TavilySearch` built in |
 | `api_request` | `tool.api.ApiTools.request(connections)` | `ApiConnection`s you register |
+| `api_connections`, `api_request`, `api_describe` (endpoints from an OpenAPI description) | `tool.api.ApiTools.all(connectionSource)` | a `ConnectionSource`: each run's own connections |
+| `procedure_list`, `_get`, `_run`, `_save` | `tool.api.ProcedureTools.all(connectionSource, store)` (or `Skills.apiProcedures(...)`) | a `ProcedureStore` |
 | `spreadsheet_create`, `_read`, `_update` (Excel, with charts, via Apache POI) | `tool.office.SpreadsheetTools.all()` | a `Workspace` |
 | any MCP server's tools | `tool.mcp.McpClient.stdio(...)` / `.http(...)` → `.tools()` | an MCP server |
 
@@ -697,9 +705,11 @@ registry.register(WebTools.fetch())
 ```java
 ApiConnection stripe = ApiConnection.builder("stripe", "https://api.stripe.com/v1")
     .description("Payments: customers, invoices, subscriptions")
-    .auth(ApiAuth.bearer(scope -> secrets.stripeKeyFor(scope.tenantId())))  // or header / basic / queryParameter
+    .auth(ApiAuth.bearer(scope -> secrets.stripeKeyFor(scope.tenantId())))  // or header / basic / queryParameter / OAuth2
     .allowWrites()                                   // connections are read-only (GET/HEAD) unless enabled
     .allowedPaths("/customers/**", "/invoices/**")   // defaults to everything under the base URL
+    .bodyType(ApiBodyType.FORM)                      // Stripe takes form bodies; JSON is the default
+    .openApiSpec("https://example.com/stripe-openapi.json")   // optional, for api_describe
     .build();
 registry.register(ApiTools.request(List.of(stripe, crm)));
 ```
@@ -710,6 +720,126 @@ The model names a connection, a method and a path. **It never sees the credentia
 - Responses come back as status plus body. `select` (a JSON Pointer) returns just part of a large JSON response, and long bodies are cut off at `maxResponseChars`. `save_as` stores the raw body in the workspace (offered only when the loop has a workspace).
 - A 4xx or 5xx is an ordinary result the model can act on. An API that can't be reached at all is reported to the model as a tool failure.
 - Redirects aren't followed; they come back with their `Location`.
+- **Bodies.**
+  - **JSON** is the default, and the body must parse.
+  - **Form bodies** (`application/x-www-form-urlencoded`) come from `form`, a list of name/value pairs, never from raw text.
+  - **Plain text** is `text/plain`.
+
+  A connection's `bodyType` sets its default; the model can override it per call with `content_type`.
+
+**Each tenant's own connections: `ConnectionSource`.** A fixed list is written into the tool's description when the tool is built, and agents are built once and reused. When tenants add their own connections at runtime, pass a `ConnectionSource` instead. It's called with the run's `Scope` on every call:
+
+```java
+ConnectionSource connections = scope -> connectionDao.forTenant(scope.tenantId()).stream()
+    .map(row -> ApiConnection.builder(row.name(), row.baseUrl())
+        .description(row.description())
+        .auth(ApiAuth.bearer(s -> vault.secret(s.tenantId(), row.secretId())))
+        .build())
+    .toList();
+registry.registerAll(ApiTools.all(connections));   // api_connections, api_request, api_describe
+```
+
+The tool definitions then name no connections, so they're the same for every tenant and stay in the provider's prompt cache. The model calls `api_connections` to see this run's connections: names, descriptions, methods, paths and body types. Cache in your `ConnectionSource` if the lookup is slow.
+
+**OpenAPI: `api_describe`.** For a connection with an `openApiSpec` (OpenAPI 3 or Swagger 2, as JSON), `api_describe` gives a compact list of endpoints:
+- each endpoint's method, path (relative to the base URL), summary, parameters and body fields;
+- filtered by words and paged by 40;
+- without the endpoints the connection doesn't allow.
+
+The connection's credentials are sent only when the spec is under its base URL. Parsed descriptions are kept for ten minutes. YAML isn't supported yet; without a spec, the model reads the documentation with `web_fetch`.
+
+**OAuth2.** `OAuth2` is an `ApiAuth` that fetches access tokens for you:
+- tokens are cached per scope: the tenant by default, or each user with `.cacheLevel(ScopeLevel.USER)`;
+- a new token is fetched shortly before the old one expires;
+- after a 401, it fetches a new token and retries the request once.
+
+```java
+ApiAuth crmAuth = OAuth2.refreshToken("https://crm.example.com/oauth/token",
+        scope -> crmClientId, scope -> crmClientSecret,
+        OAuth2.RefreshTokens.of(scope -> tokens.load(scope.tenantId()),         // from your store
+                (scope, rotated) -> tokens.save(scope.tenantId(), rotated)))     // for providers that rotate them
+    .build();
+ApiAuth billingAuth = OAuth2.clientCredentials(tokenUrl,
+        scope -> clientIds.get(scope.tenantId()), scope -> clientSecrets.get(scope.tenantId()))
+    .scopes("invoices.read")
+    .build();
+```
+
+- **Secrets.** Tokens come only from your functions, never from the model. A failed token request throws with the status and the provider's `error` and `error_description`, never the secrets.
+- **Connecting an account.** The authorization-code flow (sending the user to the provider and back) belongs in your app; hand the refresh token it produces to `OAuth2.refreshToken`.
+- **Other schemes.** Any `ApiAuth` can retry after a 401 by overriding `renewAfterUnauthorized(scope)`.
+
+### Saved API procedures: `procedure_*`
+
+An agent can work out how to do a task against an API it hasn't seen before, then save what worked as a **procedure**: a named, versioned recipe with typed parameters. It (or your code) can then run it again in one call, with no model call between steps.
+
+```java
+ProcedureStore procedures = new InMemoryProcedureStore();   // or your own, on your database
+Agent agent = Agent.builder(definition)
+    .skills(Skills.apiProcedures(connections, procedures))   // api_*, procedure_*, web_fetch, and the method
+    .build();
+```
+
+`Skills.apiProcedures` teaches the method:
+
+1. Check `procedure_list` first.
+2. Otherwise, read the API's OpenAPI description (`api_describe`) or its documentation (`web_fetch`).
+3. Explore with read-only calls.
+4. Ask before writing.
+5. Save a procedure only once its steps have worked against the live API.
+6. When a saved procedure fails, repair it and save the fix as a new version.
+
+A saved procedure for a tenant's CRM, as `Procedure.toJson()` writes it (abridged):
+
+```json
+{
+  "name": "add_contact_note",
+  "version": 1,
+  "connection": "crm",
+  "description": "Find a contact by email and add a note to them",
+  "inputSchema": {"type": "object", "required": ["email", "text"],
+                  "properties": {"email": {"type": "string"}, "text": {"type": "string"},
+                                 "pinned": {"type": "boolean", "default": false}}},
+  "steps": [
+    {"name": "find", "method": "GET", "path": "/contacts",
+     "query": [{"name": "email", "value": "{{email}}"}], "keep": {"id": "/data/0/id"}},
+    {"name": "note", "method": "POST", "path": "/contacts/{{find.id}}/notes", "bodyType": "JSON",
+     "body": "{\"body\": \"{{text}}\", \"pinned\": \"{{pinned}}\"}", "keep": {"id": "/id"}}
+  ],
+  "output": "{\"contact\": \"{{find.id}}\", \"note\": \"{{note.id}}\"}",
+  "savedAt": "2026-10-30T10:15:30Z"
+}
+```
+
+- **Templates.** `{{param}}` is a parameter. `{{step.value}}` is a value an earlier step kept with `keep`, a JSON Pointer into its response.
+  - Values put into a path are percent-encoded as one segment, so `../admin` can't become path structure. The path then goes through the same checks as `api_request`.
+  - JSON bodies and the output are filled in as JSON, never by pasting text: `"{{pinned}}"` on its own becomes `false`, not `"false"`.
+  - An optional parameter that isn't given drops its JSON field. A query or form entry whose value is just that parameter is left out too.
+- **Parameters.** These use a small JSON-schema subset: `string`, `integer`, `number` and `boolean`, each with an optional `description`, `enum` and `default`. `procedure_run` refuses unknown or missing arguments and values of the wrong type, and names the parameter.
+- **Checked when saved and again when run.**
+  - The procedure's connection must exist for the run's scope.
+  - The connection must allow every step's method (a procedure that writes needs `allowWrites()`) and every path pattern.
+  - `procedure_save` checks this, and `procedure_run` checks again before sending anything, since the connection may have changed in between.
+- **Failures.**
+  - A failing step stops the run: an HTTP error, or a value it should keep missing from the response.
+  - The model gets that step's status and body, so it can fix the procedure with `procedure_get` and `procedure_save`.
+  - Later steps aren't sent.
+  - Saving an existing name makes a new version, and earlier versions are kept.
+- **Safety.**
+  - `procedure_run`'s results are untrusted content, like `api_request`'s. So are `procedure_list`'s and `procedure_get`'s, since the model wrote the procedures.
+  - `procedure_run` of a procedure that writes, and `procedure_save` of one, count as writes for `UntrustedContentGuard` and `context.writes(call)`.
+  - The store sees `context.scope().atLevel(level)` (`TENANT` by default, or another level via `ProcedureTools.all(connections, store, level)`), never a scope from the model's arguments.
+
+**From your own code**, run a saved procedure with a `ProcedureRunner`, under the same rules and with the scope's own credentials:
+
+```java
+ProcedureRunner runner = new ProcedureRunner(connections);
+Procedure procedure = procedures.latest(scope.atLevel(ScopeLevel.TENANT), "add_contact_note").orElseThrow();
+ProcedureResult result = runner.run(scope, procedure, Map.of("email", "ann@example.com", "text", "Renewal agreed"));
+// result.succeeded(), result.output() (JSON text), result.failure() (step, status, body), result.writesMade()
+```
+
+You can also build procedures in code, with `Procedure.builder(name, connection)` and `ProcedureStep.builder(name, method, path)`.
 
 ### Spreadsheets: `spreadsheet_create` / `_read` / `_update`
 
@@ -1073,13 +1203,53 @@ Agent agent = Agent.builder(definition).skills(payroll, Skills.spreadsheets()).b
 ### Other extension points
 
 - **`SearchProvider`.** Any search backend for `web_search`. Return `SearchProvider.Result(title, url, snippet)`s. Throw `ToolInputException` for things like rate limiting, and any other exception for misconfiguration (it's reported to the model as a tool failure, and to interceptors' `failed(...)`).
-- **`ApiAuth`.** Any authentication scheme for `api_request`: return the headers and/or query parameters to add for a given `Scope`.
+- **`ApiAuth`.** Any authentication scheme for `api_request` and procedures: return the headers and/or query parameters to add for a given `Scope`, and override `renewAfterUnauthorized(scope)` to retry once after a 401 (as `OAuth2` does).
+- **`ConnectionSource`.** Each run's API connections, looked up from its `Scope`; see "Any HTTP API".
+- **`ProcedureStore`.** Where saved API procedures live; see "A custom `ProcedureStore`" below.
 - **`HumanTools.Handler`.** How `ask_human` reaches your user, and how long it waits.
 - **`AgentDelegate`.** Delegate to anything: a remote agent service, a queue a human team works from.
 - **`EmailService`, `CalendarService`.** Mail and calendar backends for the `email_*` and `calendar_*` tools; see "Email and calendar" above.
 - **`ConversationStore`, `ConversationCompactor`, `UsageMeter`.** See the sections below.
 - **`MemoryStore`, `Workspace`.** Covered above.
 - **`VectorIndex`, `Embedder`, `ContentScreener`.** Semantic search storage and embeddings (below), and screening outside content (see "Untrusted content").
+
+### A custom `ProcedureStore`
+
+Six methods, partitioned by scope like `MemoryStore`. The scope arrives already reduced to the procedure tools' level (`TENANT` by default):
+
+- `save` stores a procedure as the **next version** of its name (1 if it's new, otherwise the latest + 1) and returns `procedure.withVersion(version, now)`. It never overwrites, and two concurrent saves of one name must get different versions.
+- `latest`, `version` and `versions` (oldest first) read them back.
+- `search` returns the latest version of each procedure, best match first. A blank query means most recently saved first.
+- `delete` removes every version. The model can't call it; it's for your settings UI.
+
+`Procedure.toJson()` and `Procedure.fromJson(...)` turn a procedure into one document. On MongoDB, for example:
+
+```java
+// procedures: { scopeKey, name, version, savedAt, writes, connection, description, procedure: <toJson()> }
+// unique index on { scopeKey: 1, name: 1, version: 1 }
+@Override
+public Procedure save(Scope scope, Procedure procedure) {
+    while (true) {
+        int next = latest(scope, procedure.name()).map(p -> p.version() + 1).orElse(1);
+        Procedure saved = procedure.withVersion(next, Instant.now());
+        try {
+            collection.insertOne(new Document("scopeKey", scope.key()).append("name", saved.name())
+                    .append("version", next).append("savedAt", Date.from(saved.savedAt()))
+                    .append("writes", saved.writes()).append("connection", saved.connection())
+                    .append("description", saved.description()).append("procedure", Document.parse(saved.toJson())));
+            return saved;
+        } catch (MongoWriteException e) {
+            if (e.getError().getCategory() != ErrorCategory.DUPLICATE_KEY) {
+                throw e;
+            }
+            // another save took this version: try the next one
+        }
+    }
+}
+// latest:   find(eq("scopeKey", key), eq("name", name)).sort(descending("version")).first()
+// search:   the latest version per name (an aggregation, or a "latest" flag you keep up to date),
+//           text-matched on name and description; most recent first for a blank query
+```
 
 ### A custom `VectorIndex` or `Embedder` (semantic search)
 

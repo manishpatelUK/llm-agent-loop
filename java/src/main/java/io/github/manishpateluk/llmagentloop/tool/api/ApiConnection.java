@@ -42,6 +42,8 @@ public final class ApiConnection {
     private final Map<String, String> defaultHeaders;
     private final Duration timeout;
     private final int maxResponseChars;
+    private final ApiBodyType bodyType;
+    private final URI openApiSpec;
 
     private ApiConnection(Builder b) {
         this.name = b.name;
@@ -54,6 +56,8 @@ public final class ApiConnection {
         this.defaultHeaders = Map.copyOf(b.defaultHeaders);
         this.timeout = b.timeout;
         this.maxResponseChars = b.maxResponseChars;
+        this.bodyType = b.bodyType;
+        this.openApiSpec = b.openApiSpec;
     }
 
     public static Builder builder(String name, String baseUrl) {
@@ -96,6 +100,21 @@ public final class ApiConnection {
         return maxResponseChars;
     }
 
+    /** How request bodies are encoded unless a call says otherwise; {@link ApiBodyType#JSON} by default. */
+    public ApiBodyType bodyType() {
+        return bodyType;
+    }
+
+    /** Where this API's OpenAPI description is, for {@code api_describe}; {@code null} if not set. */
+    public URI openApiSpec() {
+        return openApiSpec;
+    }
+
+    /** Whether this connection allows any method other than GET and HEAD. */
+    public boolean allowsWrites() {
+        return allowedMethods.stream().anyMatch(m -> !READ_METHODS.contains(m));
+    }
+
     /** {@code path} is relative to the base URL's path, e.g. {@code /customers/cus_123}. */
     boolean pathAllowed(String path) {
         return allowedPathPatterns.stream().anyMatch(p -> p.matcher(path).matches());
@@ -136,6 +155,8 @@ public final class ApiConnection {
         private final Map<String, String> defaultHeaders = new LinkedHashMap<>();
         private Duration timeout = Duration.ofSeconds(30);
         private int maxResponseChars = 20_000;
+        private ApiBodyType bodyType = ApiBodyType.JSON;
+        private URI openApiSpec;
 
         private Builder(String name, String baseUrl) {
             if (name == null || !NAME.matcher(name).matches()) {
@@ -215,6 +236,29 @@ public final class ApiConnection {
                 throw new IllegalArgumentException("maxResponseChars must be positive");
             }
             this.maxResponseChars = maxResponseChars;
+            return this;
+        }
+
+        /** How request bodies are encoded by default, e.g. {@link ApiBodyType#FORM} for Stripe. The model can override it per call. */
+        public Builder bodyType(ApiBodyType bodyType) {
+            this.bodyType = Objects.requireNonNull(bodyType, "bodyType");
+            return this;
+        }
+
+        /**
+         * Where the API's OpenAPI (3.x) or Swagger (2.0) description is, as JSON, for
+         * {@code api_describe}: an absolute URL, or a path under the base URL such as
+         * {@code "/openapi.json"}. The connection's credentials are sent only when it's under the
+         * base URL; a spec hosted anywhere else is fetched without them.
+         */
+        public Builder openApiSpec(String url) {
+            Objects.requireNonNull(url, "url");
+            URI uri = url.startsWith("/") ? URI.create(baseUrl + url) : URI.create(url);
+            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+            if ((!scheme.equals("https") && !scheme.equals("http")) || uri.getHost() == null || uri.getUserInfo() != null) {
+                throw new IllegalArgumentException("openApiSpec must be an http(s) URL or a path starting with '/': " + url);
+            }
+            this.openApiSpec = uri;
             return this;
         }
 
