@@ -47,8 +47,13 @@ public final class SemanticMemoryStore implements MemoryStore {
     public MemoryEntry save(Scope scope, String content, List<String> tags) {
         MemoryEntry entry = delegate.save(scope, content, tags);
         try {
-            search.indexMemory(scope, entry.id(), entry.content(),
-                    Map.of("tags", String.join("\n", entry.tags()), "createdAt", entry.createdAt().toString()));
+            Map<String, String> indexed = new HashMap<>(Map.of("tags", String.join("\n", entry.tags()),
+                    "createdAt", entry.createdAt().toString()));
+            String source = entry.metadata().get(MemoryEntry.SOURCE);
+            if (source != null && !source.isBlank()) {
+                indexed.put(MemoryEntry.SOURCE, source);
+            }
+            search.indexMemory(scope, entry.id(), entry.content(), indexed);
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "Couldn't index memory " + entry.id() + " for semantic search", e);
         }
@@ -102,7 +107,9 @@ public final class SemanticMemoryStore implements MemoryStore {
     private static MemoryEntry toMemory(VectorIndex.Entry hit) {
         String tags = hit.metadata().getOrDefault("tags", "");
         String createdAt = hit.metadata().get("createdAt");
+        String source = hit.metadata().get(MemoryEntry.SOURCE);
         return new MemoryEntry(hit.id(), hit.text(), tags.isEmpty() ? List.of() : Arrays.asList(tags.split("\n")),
-                createdAt == null ? Instant.EPOCH : Instant.parse(createdAt));
+                createdAt == null ? Instant.EPOCH : Instant.parse(createdAt),
+                source == null ? Map.of() : Map.of(MemoryEntry.SOURCE, source));
     }
 }

@@ -539,6 +539,17 @@ loop.run(LoopRequest.builder()
 ```
 
 - **Memory** is long-term facts. The model manages it explicitly through the `memory_*` tools, and the loop also searches it with each step's goal and adds the best matches to that step's context.
+- **Recall policy.** How that automatic recall works is set with `.recall(...)`:
+  - `RecallPolicy.everyStep(5)`, the default, searches with the goal before every step;
+  - `RecallPolicy.oncePerRun(n)` searches once, on the first step, and shows the same memories after: one search and,
+    with semantic search, one embedding call per run;
+  - `RecallPolicy.NONE` turns it off.
+
+  Your own policy gets a `RecallRequest`: the scoped memory, the goal, the step, what it returned last time, and the
+  run's tags. A policy that throws recalls nothing for that step instead of failing the run.
+- **Memory metadata.** A `MemoryEntry` can carry `metadata`. Recalled entries with `MemoryEntry.SOURCE` or
+  `MemoryEntry.AGE` read `[user, 3 days ago] Prefers short answers`, so the model can weigh where a fact came from and
+  how old it is. Your store fills these in `search`.
 - **Workspace** is files — drafts, reports, spreadsheets, text or binary. `result.changedFiles()` tells you what a run produced. Without one, tools and parameters that need a workspace aren't offered to the model (see "Tools that need a workspace").
 - **Sharing level.** Both are shared at `ScopeLevel.USER` by default: across all of one user's sessions, never between users. Change that with `.memoryLevel(...)`/`.workspaceLevel(...)` — `SESSION` for per-conversation data, or `TENANT` to share across a tenant's users (deliberately: anything one user's agent saves, every other user's agent can then read).
 - **No scope** gives a run a private, throwaway scope: nothing leaks between callers who forget to pass one, but nothing persists between runs either.
@@ -1001,7 +1012,7 @@ public final class PostgresMemoryStore implements MemoryStore {
 AgentLoop loop = AgentLoop.builder().memory(new PostgresMemoryStore(dataSource)) /* ... */ .build();
 ```
 
-On Google Cloud, this example runs unchanged on Cloud SQL for PostgreSQL or AlloyDB. For semantic recall, swap the full-text query for an embedding search (pgvector, AlloyDB AI, Pinecone, etc.) and keep the same filter on `scope_key`. The loop calls `search` with each step's goal to recall context automatically, and the model calls it via `memory_search`; both go through this one method.
+On Google Cloud, this example runs unchanged on Cloud SQL for PostgreSQL or AlloyDB. For semantic recall, swap the full-text query for an embedding search (pgvector, AlloyDB AI, Pinecone, etc.) and keep the same filter on `scope_key`. The loop calls `search` with the goal to recall context automatically (before every step by default; see `RecallPolicy`), and the model calls it via `memory_search`; both go through this one method. To label recalled entries, return them with `metadata` (`MemoryEntry.SOURCE`, `MemoryEntry.AGE`).
 
 ### A custom `Workspace`
 

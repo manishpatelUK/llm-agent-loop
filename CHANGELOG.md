@@ -3,6 +3,39 @@
 Changes that affect callers of `llm-agent-loop`, newest first: what changed, and what calling code
 needs to do, if anything.
 
+## Java 1.0.12 — on `llm-router` 1.0.14
+
+### Recall policy and memory metadata
+
+Nothing needs to change in calling code: the defaults behave as before.
+
+- **`RecallPolicy`.** `AgentLoop.Builder.recall(RecallPolicy)` decides which memories each working step is
+  reminded of, unprompted:
+  - `RecallPolicy.everyStep(5)` is the default, and is the old behaviour: it searches with the goal before every step.
+  - `RecallPolicy.oncePerRun(n)` searches on the run's first step and shows the same memories after. That is one
+    search per run instead of one per step, and with semantic search one embedding call instead of one per step.
+  - `RecallPolicy.NONE` recalls nothing; `memory_search` still works.
+
+  A custom policy gets a `RecallRequest` with:
+  - the run's `ScopedMemory`;
+  - the goal;
+  - how many recalls the run has made;
+  - what it returned last time;
+  - the run's `LoopRequest.tags`.
+
+  Runs started from a run on the same loop use the same policy. A policy that throws recalls nothing for that step,
+  with a warning, instead of failing the run.
+- **`MemoryEntry.metadata`.** It's a new `Map<String, String>`, never `null`, and the four-argument constructor still
+  works. Two keys are shown when an entry is recalled into a step:
+  - `MemoryEntry.SOURCE` ("source");
+  - `MemoryEntry.AGE` ("age").
+
+  An entry with either reads `[user, 3 days ago] Prefers short answers`, so the model can weigh it. Your
+  `MemoryStore` fills them in `search`; age is relative to now, so compute it there. `memory_search` rows include
+  `source`. `SemanticMemoryStore` keeps `source` in its index, so semantic-only matches keep it.
+- **Recalled text.** If you match it (in a scripted model, for example), note that entries now render through
+  `MemoryEntry.recalledText()`. It is the plain content for entries without metadata, as before.
+
 ## Java 1.0.11 — on `llm-router` 1.0.14
 
 ### Agents that learn unfamiliar REST APIs

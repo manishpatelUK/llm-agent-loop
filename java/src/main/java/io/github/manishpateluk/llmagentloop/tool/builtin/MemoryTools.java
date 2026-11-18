@@ -97,6 +97,10 @@ public final class MemoryTools {
         if (!entry.tags().isEmpty()) {
             row.put("tags", entry.tags());
         }
+        String source = entry.metadata().get(MemoryEntry.SOURCE);
+        if (source != null && !source.isBlank()) {
+            row.put("source", source);
+        }
         row.put("savedAt", entry.createdAt().toString());
         return row;
     }

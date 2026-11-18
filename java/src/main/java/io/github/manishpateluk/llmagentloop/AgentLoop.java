@@ -35,6 +35,8 @@ import io.github.manishpateluk.llmagentloop.execution.StepRecord;
 import io.github.manishpateluk.llmagentloop.execution.TerminationReason;
 import io.github.manishpateluk.llmagentloop.memory.MemoryEntry;
 import io.github.manishpateluk.llmagentloop.memory.MemoryStore;
+import io.github.manishpateluk.llmagentloop.memory.RecallPolicy;
+import io.github.manishpateluk.llmagentloop.memory.RecallRequest;
 import io.github.manishpateluk.llmagentloop.search.KnowledgeSearch;
 import io.github.manishpateluk.llmagentloop.search.SemanticMemoryStore;
 import io.github.manishpateluk.llmagentloop.search.SemanticSearch;
@@ -174,14 +176,14 @@ public final class AgentLoop {
             WorkspaceLimits workspaceLimits, ConversationStore conversations, List<ToolInterceptor> interceptors,
             Duration toolTimeout, UsageMeter usageMeter, ConversationCompaction compaction,
             boolean labelUntrustedContent, ContentScreener contentScreener, SemanticSearch semanticSearch,
-            UntrustedMarkers untrustedMarkers) {
+            UntrustedMarkers untrustedMarkers, RecallPolicy recall) {
 
         /** Defaults, with a fresh {@link InMemoryUsageMeter} — so metering is on unless switched off. */
         static Settings defaults() {
             return new Settings(MemoryStore.NONE, ScopeLevel.USER, Workspace.NONE, ScopeLevel.USER,
                     WorkspaceLimits.DEFAULT, ConversationStore.NONE, List.of(), DEFAULT_TOOL_TIMEOUT,
                     new InMemoryUsageMeter(), ConversationCompaction.DEFAULT, true, ContentScreener.NONE, null,
-                    UntrustedMarkers.random());
+                    UntrustedMarkers.random(), RecallPolicy.everyStep(AUTO_RECALL_LIMIT));
         }
 
         Settings {
@@ -197,6 +199,7 @@ public final class AgentLoop {
             Objects.requireNonNull(compaction, "compaction");
             Objects.requireNonNull(contentScreener, "contentScreener");
             Objects.requireNonNull(untrustedMarkers, "untrustedMarkers");
+            Objects.requireNonNull(recall, "recall");
         }
     }
 
@@ -219,7 +222,7 @@ public final class AgentLoop {
     private static Settings withMemory(Settings d, MemoryStore memory) {
         return new Settings(memory, d.memoryLevel(), d.workspace(), d.workspaceLevel(), d.workspaceLimits(),
                 d.conversations(), d.interceptors(), d.toolTimeout(), d.usageMeter(), d.compaction(),
-                d.labelUntrustedContent(), d.contentScreener(), d.semanticSearch(), d.untrustedMarkers());
+                d.labelUntrustedContent(), d.contentScreener(), d.semanticSearch(), d.untrustedMarkers(), d.recall());
     }
 
     private AgentLoop(LlmRouter router, ToolRegistry tools, Settings settings) {
@@ -349,8 +352,19 @@ public final class AgentLoop {
         private boolean labelUntrustedContent = true;
         private ContentScreener contentScreener = ContentScreener.NONE;
         private SemanticSearch semanticSearch;
+        private RecallPolicy recall = DEFAULTS.recall();
 
         private Builder() {
+        }
+
+        /**
+         * Which memories each working step is reminded of, unprompted; defaults to
+         * {@code RecallPolicy.everyStep(5)}. {@link RecallPolicy#oncePerRun} searches once per run instead,
+         * and {@link RecallPolicy#NONE} recalls nothing.
+         */
+        public Builder recall(RecallPolicy recall) {
+            this.recall = Objects.requireNonNull(recall, "recall");
+            return this;
         }
 
         /** Explicit adapters the assembled router should use — mutually exclusive with {@link #router}. */
@@ -517,7 +531,8 @@ public final class AgentLoop {
             return new AgentLoop(effectiveRouter, tools, new Settings(effectiveMemory, memoryLevel, workspace, workspaceLevel,
                     workspaceLimits, conversations, interceptors, toolTimeout, meter, compaction,
                     labelUntrustedContent, contentScreener, search,
-                    untrustedMarkerSecret == null ? UntrustedMarkers.random() : UntrustedMarkers.withSecret(untrustedMarkerSecret)));
+                    untrustedMarkerSecret == null ? UntrustedMarkers.random() : UntrustedMarkers.withSecret(untrustedMarkerSecret),
+                    recall));
         }
 
         private LlmRouter buildRouter() {
@@ -671,6 +686,9 @@ public final class AgentLoop {
         private final Map<Limits, EnumSet<TerminationReason>> limitWarningsGiven = new IdentityHashMap<>();
         /** The goal-directed loops in progress, innermost last: what a wrap-up answers from. */
         private final Deque<Frame> frames = new ArrayDeque<>();
+        /** How many times this run has recalled memory, and what the last recall gave ({@code null} before the first). */
+        private int recalls;
+        private List<MemoryEntry> lastRecalled;
 
         private volatile boolean cancelRequested;
         private volatile boolean cancelled;
@@ -1036,6 +1054,22 @@ public final class AgentLoop {
             return last;
         }
 
+        /** The memories the loop's {@link RecallPolicy} gives this step; a failing policy recalls nothing. */
+        private List<MemoryEntry> recall(String goal) {
+            List<MemoryEntry> recalled;
+            try {
+                recalled = settings.recall().recall(new RecallRequest(scopedMemory, goal, recalls, lastRecalled,
+                        request.tags()));
+            } catch (RuntimeException e) {
+                emit(currentThread, MessageType.WARNING, "Couldn't recall memory: " + e.getMessage());
+                recalled = List.of();
+            }
+            recalled = recalled == null ? List.of() : List.copyOf(recalled);
+            recalls++;
+            lastRecalled = recalled;
+            return recalled;
+        }
+
         /**
          * The step loop for a single thread pursuing {@code goal}: call the LLM, then either run a
          * tool (looping back), spawn a sub-task (looping back once it resolves), or complete — with
@@ -1066,9 +1100,9 @@ public final class AgentLoop {
                     availableTools.add(AgentLoopSchemas.SPAWN_SUB_TASK);
                 }
 
-                List<MemoryEntry> recalled = scopedMemory.search(goal, AUTO_RECALL_LIMIT);
+                List<MemoryEntry> recalled = recall(goal);
                 String prompt = (goalSent ? CONTINUE_PROMPT : goalTurn.getContent()) + (recalled.isEmpty() ? ""
-                        : "\n\n" + MEMORY_NOTE_PREFIX + String.join("\n- ", recalled.stream().map(MemoryEntry::content).toList()));
+                        : "\n\n" + MEMORY_NOTE_PREFIX + String.join("\n- ", recalled.stream().map(MemoryEntry::recalledText).toList()));
 
                 Request req = request(prompt, systemInstructions, history)
                         .attachments(goalSent ? List.of() : goalTurn.getAttachments())
